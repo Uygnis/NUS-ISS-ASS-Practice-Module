@@ -1,0 +1,37 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3000:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+
+  account-service:
+    build:
+      context: ./services/account-service
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8081:8080"
+  reservation-service:
+    build:
+      context: ./services/reservation-service
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8082:8080"
+  catalog-service:
+    build:
+      context: ./services/catalog-service
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8083:8080"
+  notification-service:
+    build:
+      context: ./services/notification-service
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8084:8080"
