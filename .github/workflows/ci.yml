@@ -106,16 +106,63 @@ jobs:
       security-events: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - uses: github/codeql-action/init@v3
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
         with:
           languages: javascript,java
           queries: security-extended,security-and-quality
 
-      - uses: github/codeql-action/autobuild@v3
+      # Build Frontend
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
-      - uses: github/codeql-action/analyze@v3
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      # Build Backend
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: maven
+
+      - name: Build account-service
+        working-directory: services/account-service
+        run: |
+          chmod +x mvnw
+          ./mvnw clean compile -DskipTests
+
+      - name: Build catalog-service
+        working-directory: services/catalog-service
+        run: |
+          chmod +x mvnw
+          ./mvnw clean compile -DskipTests
+
+      - name: Build notification-service
+        working-directory: services/notification-service
+        run: |
+          chmod +x mvnw
+          ./mvnw clean compile -DskipTests
+
+      - name: Build reservation-service
+        working-directory: services/reservation-service
+        run: |
+          chmod +x mvnw
+          ./mvnw clean compile -DskipTests
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
 
   ###############################################################################
   # Software Composition Analysis
