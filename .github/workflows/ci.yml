@@ -1,0 +1,192 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "feature/**"
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build frontend
+        run: npm run build
+
+  backend:
+    name: ${{ matrix.service }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - account-service
+          - catalog-service
+          - notification-service
+          - reservation-service
+
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: maven
+
+      - name: Make Maven Wrapper executable
+        run: chmod +x mvnw
+
+      - name: Build and run tests
+        run: ./mvnw verify
+
+  ###############################################################################
+  # Code Coverage
+  ###############################################################################
+
+  # Uncomment after adding JaCoCo
+  # - name: Upload JaCoCo Report
+  #   if: always()
+  #   uses: actions/upload-artifact@v4
+  #   with:
+  #     name: jacoco-${{ matrix.service }}
+  #     path: services/${{ matrix.service }}/target/site/jacoco/
+
+  ###############################################################################
+  # Static Application Security Testing
+  ###############################################################################
+
+  sast:
+    name: SAST - CodeQL Scan
+    needs: [frontend, backend]
+    runs-on: ubuntu-latest
+
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript,java
+          queries: security-extended,security-and-quality
+
+      # Build Frontend
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      # Build Backend
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: maven
+
+      - name: Build account-service
+        working-directory: services/account-service
+        run: |
+          chmod +x mvnw
+          ./mvnw clean compile -DskipTests
+
+      - name: Build catalog-service
+        working-directory: services/catalog-service
+        run: |
+          chmod +x mvnw
+          ./mvnw clean compile -DskipTests
+
+      - name: Build notification-service
+        working-directory: services/notification-service
+        run: |
+          chmod +x mvnw
+          ./mvnw clean compile -DskipTests
+
+      - name: Build reservation-service
+        working-directory: services/reservation-service
+        run: |
+          chmod +x mvnw
+          ./mvnw clean compile -DskipTests
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+  ###############################################################################
+  # Software Composition Analysis
+  ###############################################################################
+
+  # security scan
+  dependency-check:
+    name: OWASP Dependency Check
+    runs-on: ubuntu-latest
+    needs: [frontend, backend]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: "RentEZ"
+          path: "."
+          format: "HTML"
+          out: "reports"
+
+      - name: Upload Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: reports
