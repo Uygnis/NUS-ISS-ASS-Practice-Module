@@ -1,27 +1,5 @@
 import { useEffect, useState } from 'react'
-
-const validateName = (name) => {
-  if (!name.trim() || name.trim().length < 2) {
-    return 'Name must be at least 2 characters.'
-  }
-  if (name.length > 100) {
-    return 'Name cannot exceed 100 characters.'
-  }
-  if (/[0-9]/.test(name)) {
-    return 'Name cannot contain digits.'
-  }
-  return ''
-}
-
-const validatePhone = (phone) => {
-  if (!phone.trim()) {
-    return 'Phone number is required.'
-  }
-  if (!/^[0-9]{8}$/.test(phone)) {
-    return 'Phone number must be exactly 8 digits.'
-  }
-  return ''
-}
+import { validateName, validatePhone } from '../utils/validation'
 
 export function ProfilePage({ profile, onSave, onCancel, error }) {
   const [draft, setDraft] = useState({

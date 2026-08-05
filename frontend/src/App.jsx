@@ -160,7 +160,7 @@ function App() {
             path="/profile"
             element={
               user.isAuthenticated ? (
-                <ProfilePageView profile={user.profile} onSave={handleProfileSave} error={error} />
+                <ProfilePageView profile={user.profile} onSave={handleProfileSave} error={error} onLogout={handleLogout} />
               ) : (
                 <Navigate to="/login" replace />
               )

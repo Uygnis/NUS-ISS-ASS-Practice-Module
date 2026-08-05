@@ -3,7 +3,7 @@ import TopNav from '../components/TopNav.jsx'
 import '../styles/ProfilePageView.css'
 import { ProfilePage } from '../components/ProfilePage.jsx'
 
-export default function ProfilePageView({ profile, onSave, error }) {
+export default function ProfilePageView({ profile, onSave, error, onLogout }) {
   const navigate = useNavigate()
 
   const handleSave = async (draft) => {
@@ -16,7 +16,7 @@ export default function ProfilePageView({ profile, onSave, error }) {
 
   return (
     <div className="page-shell profile-page-layout">
-      <TopNav onLogout={handleBack} />
+      <TopNav onLogout={onLogout} />
       <main className="page-main">
         <ProfilePage profile={profile} onSave={handleSave} onCancel={handleBack} error={error} />
       </main>

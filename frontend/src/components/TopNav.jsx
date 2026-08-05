@@ -6,10 +6,14 @@ export default function TopNav({ onLogout }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const navigate = useNavigate()
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     setMenuOpen(false)
-    onLogout()
-    navigate('/login')
+    try {
+      if (onLogout) await Promise.resolve(onLogout())
+    } catch (err) {
+      void err
+    }
+    navigate('/login', { replace: true })
   }
 
   return (
