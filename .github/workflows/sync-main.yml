@@ -1,0 +1,102 @@
+name: Sync Main to Feature Branches
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    # Only run if the PR was actually merged. Conduct a test to see if this works
+    if: github.event.pull_request.merged == true
+
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GH_PAT }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch all branches
+        run: |
+          git fetch --all
+
+      - name: Sync feature branches
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+
+          SOURCE_BRANCH="${{ github.event.pull_request.head.ref }}"
+
+          echo "Merged branch: $SOURCE_BRANCH"
+
+          branches=$(git branch -r \
+            | grep '^  origin/feature/' \
+            | sed 's|origin/||' \
+            | xargs)
+
+          for branch in $branches
+          do
+
+            echo "======================================"
+            echo "Checking: $branch"
+
+            # Skip the branch that was just merged into main
+            if [ "$branch" = "$SOURCE_BRANCH" ]; then
+              echo "Skipping source branch."
+              continue
+            fi
+
+            # Skip if already up-to-date
+            if git merge-base --is-ancestor origin/main origin/$branch
+            then
+              echo "$branch is already up-to-date."
+              continue
+            fi
+
+            # Skip if an open sync PR already exists
+            existing=$(gh pr list \
+              --base "$branch" \
+              --head main \
+              --state open \
+              --json number \
+              --jq 'length')
+
+            if [ "$existing" != "0" ]
+            then
+              echo "Open sync PR already exists."
+              continue
+            fi
+
+            echo "Creating sync PR..."
+
+            gh pr create \
+              --base "$branch" \
+              --head main \
+              --title "Sync main into $branch" \
+              --body "This PR was automatically created to synchronize the latest changes from **main** into **$branch**." \
+              --label sync
+
+            pr=$(gh pr list \
+              --base "$branch" \
+              --head main \
+              --state open \
+              --json number \
+              --jq '.[0].number')
+
+            echo "Created PR #$pr"
+
+            echo "Enabling auto-merge..."
+
+            gh pr merge "$pr" \
+              --auto \
+              --merge
+
+          done
