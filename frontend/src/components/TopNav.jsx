@@ -19,10 +19,10 @@ export default function TopNav({ onLogout }) {
         RentEZ
       </Link>
       <div className="top-nav-actions">
-        <button type="button" className="secondary-button" onClick={() => navigate('/home')}>
+        <button type="button" className="secondary-button" onClick={() => navigate('/reservations')}>
           My reservations
         </button>
-        <button type="button" className="primary-button" onClick={() => navigate('/home')}>
+        <button type="button" className="primary-button" onClick={() => navigate('/new-reservation')}>
           + New reservation
         </button>
         <button

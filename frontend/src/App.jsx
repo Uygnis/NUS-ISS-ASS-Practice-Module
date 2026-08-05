@@ -7,6 +7,8 @@ import RegisteredPage from './pages/RegisteredPage.jsx'
 import HomePage from './pages/HomePage.jsx'
 import ProfilePageView from './pages/ProfilePageView.jsx'
 import NotificationsPage from './pages/NotificationsPage.jsx'
+import MyReservationsPage from './pages/MyReservationsPage.jsx'
+import NewReservationPage from './pages/NewReservationPage.jsx'
 
 const initialUser = { isAuthenticated: false, profile: null }
 
@@ -129,6 +131,26 @@ function App() {
             element={
               user.isAuthenticated ? (
                 <NotificationsPage onLogout={handleLogout} />
+              ) : (
+                <Navigate to="/login" replace />
+              )
+            }
+          />
+          <Route
+            path="/reservations"
+            element={
+              user.isAuthenticated ? (
+                <MyReservationsPage onLogout={handleLogout} />
+              ) : (
+                <Navigate to="/login" replace />
+              )
+            }
+          />
+          <Route
+            path="/new-reservation"
+            element={
+              user.isAuthenticated ? (
+                <NewReservationPage onLogout={handleLogout} />
               ) : (
                 <Navigate to="/login" replace />
               )

@@ -1,45 +1,117 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+
+const validateName = (name) => {
+  if (!name.trim() || name.trim().length < 2) {
+    return 'Name must be at least 2 characters.'
+  }
+  if (name.length > 100) {
+    return 'Name cannot exceed 100 characters.'
+  }
+  if (/[0-9]/.test(name)) {
+    return 'Name cannot contain digits.'
+  }
+  return ''
+}
+
+const validatePhone = (phone) => {
+  if (!phone.trim()) {
+    return 'Phone number is required.'
+  }
+  if (!/^[0-9]{8}$/.test(phone)) {
+    return 'Phone number must be exactly 8 digits.'
+  }
+  return ''
+}
 
 export function ProfilePage({ profile, onSave, onCancel, error }) {
-  const initialDraft = {
+  const [draft, setDraft] = useState({
     email: profile?.email || '',
     name: profile?.name || '',
     phone: profile?.phone || '',
+  })
+  const [isEditing, setIsEditing] = useState(false)
+
+  useEffect(() => {
+    setDraft({
+      email: profile?.email || '',
+      name: profile?.name || '',
+      phone: profile?.phone || '',
+    })
+    setIsEditing(false)
+  }, [profile])
+
+  const nameError = validateName(draft.name)
+  const phoneError = validatePhone(draft.phone)
+  const canSave = !nameError && !phoneError && isEditing
+
+  const handleSave = async () => {
+    if (!canSave) return
+    const success = await onSave(draft)
+    if (success) {
+      setIsEditing(false)
+    }
   }
-  const [draft, setDraft] = useState(initialDraft)
-  const canSave = draft.name.trim().length >= 2 && draft.phone.trim().length >= 8
+
+  const handleCancelEdit = () => {
+    setDraft({
+      email: profile?.email || '',
+      name: profile?.name || '',
+      phone: profile?.phone || '',
+    })
+    setIsEditing(false)
+  }
 
   return (
-    <div className="page-shell">
-      <div className="panel">
-        <h1>My Profile</h1>
-        <label>
-          Email
-          <input value={draft.email} disabled />
-        </label>
-        <label>
-          Full name
-          <input
-            value={draft.name}
-            onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-          />
-        </label>
-        <label>
-          Phone number
-          <input
-            value={draft.phone}
-            onChange={(e) => setDraft({ ...draft, phone: e.target.value })}
-          />
-        </label>
-        {error && <div className="form-error">{error}</div>}
-        <div className="profile-actions">
-          <button type="button" disabled={!canSave} onClick={() => onSave(draft)}>
-            Save profile
-          </button>
-          <button type="button" onClick={onCancel}>
-            Back to home
-          </button>
-        </div>
+    <div className="panel profile-panel">
+      <h1>My Profile</h1>
+      <label>
+        Email
+        <input value={draft.email} disabled className="disabled-input" />
+      </label>
+      <label>
+        Full name
+        <input
+          value={draft.name}
+          disabled={!isEditing}
+          className={!isEditing ? 'disabled-input' : ''}
+          onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+        />
+        {isEditing && nameError && <div className="field-error">{nameError}</div>}
+      </label>
+      <label>
+        Phone number
+        <input
+          value={draft.phone}
+          disabled={!isEditing}
+          className={!isEditing ? 'disabled-input' : ''}
+          onChange={(e) => {
+            const cleaned = e.target.value.replace(/\D/g, '').slice(0, 8)
+            setDraft({ ...draft, phone: cleaned })
+          }}
+        />
+        {isEditing && phoneError && <div className="field-error">{phoneError}</div>}
+      </label>
+      {error && <div className="form-error">{error}</div>}
+      <div className="profile-actions">
+        {isEditing ? (
+          <>
+            <button type="button" disabled={!canSave} onClick={handleSave}>
+              Save profile
+            </button>
+            <button type="button" onClick={handleCancelEdit}>
+              Cancel
+            </button>
+          </>
+        ) : (
+          <>
+            <button type="button" onClick={() => setIsEditing(true)}>
+              Edit profile
+            </button>
+            <button type="button" onClick={onCancel}>
+              Back to home
+            </button>
+          </>
+        )}
       </div>
     </div>
   )

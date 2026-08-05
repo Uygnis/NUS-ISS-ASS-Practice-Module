@@ -7,10 +7,7 @@ export default function ProfilePageView({ profile, onSave, error }) {
   const navigate = useNavigate()
 
   const handleSave = async (draft) => {
-    const success = await onSave(draft)
-    if (success) {
-      navigate('/home')
-    }
+    await onSave(draft)
   }
 
   const handleBack = () => {

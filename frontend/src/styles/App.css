@@ -211,6 +211,9 @@
 }
 
 .panel {
+  width: 100%;
+  max-width: 920px;
+  margin: 0 auto;
   background: #ffffff;
   border: 1px solid #e6e8ed;
   border-radius: 20px;
@@ -220,6 +223,11 @@
   gap: 22px;
 }
 
+.panel input:disabled {
+  background: #f4f4f8;
+  color: #7d7c8a;
+}
+
 .success-panel {
   text-align: center;
 }
@@ -227,6 +235,9 @@
 .form-card {
   display: grid;
   gap: 18px;
+  max-width: 560px;
+  width: 100%;
+  margin: 0 auto;
 }
 
 .form-card label,
@@ -241,6 +252,7 @@
 .form-card input,
 .panel input {
   width: 100%;
+  max-width: 900px;
   border: 1px solid #d0d5db;
   border-radius: 12px;
   padding: 14px 16px;
