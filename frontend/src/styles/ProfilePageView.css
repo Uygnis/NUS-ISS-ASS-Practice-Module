@@ -1,0 +1,20 @@
+.profile-page-layout {
+  min-height: 100vh;
+  background: transparent;
+  padding: 32px 0 48px;
+}
+
+.profile-page-main {
+  width: 100%;
+}
+
+.profile-page-main .panel {
+  width: 100%;
+}
+
+.profile-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}

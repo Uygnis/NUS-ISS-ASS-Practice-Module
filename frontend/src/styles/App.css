@@ -185,16 +185,29 @@
 
 .app-root {
   min-height: 100vh;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  padding: 32px 16px;
+  padding: 0;
   box-sizing: border-box;
-  background: #f5f7fb;
+  background: transparent;
 }
 
 .page-shell {
-  width: min(100%, 560px);
+  width: 100%;
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+  box-sizing: border-box;
+}
+
+.page-main {
+  display: grid;
+  gap: 24px;
+  width: 100%;
+}
+
+.page-main {
+  display: grid;
+  gap: 24px;
+  width: 100%;
 }
 
 .panel {
