@@ -17,17 +17,12 @@ jobs:
     if: github.event.pull_request.merged == true
 
     runs-on: ubuntu-latest
-
+    env:
+      GH_TOKEN: ${{ secrets.GH_PAT }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Authenticate GitHub CLI
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          echo "$GH_TOKEN" | gh auth login --with-token
 
       - name: Fetch all branches
         run: |
