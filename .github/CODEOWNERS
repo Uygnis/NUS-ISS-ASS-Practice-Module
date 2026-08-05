@@ -1,0 +1,14 @@
+# Default owner
+* @Uygnis
+
+# Services
+services/account-service/        @sayoungestguy
+services/catalog-service/        @sayoungestguy
+services/reservation-service/    @sayoungestguy
+services/notification-service/    @sayoungestguy
+
+# Frontend
+frontend/                        @sayoungestguy
+
+# GitHub workflows
+.github/workflows/               @Uygnis
