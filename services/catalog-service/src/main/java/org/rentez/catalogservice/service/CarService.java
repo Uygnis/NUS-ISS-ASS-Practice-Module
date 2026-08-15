@@ -71,6 +71,22 @@ public class CarService {
 		return InternalCarView.from(requireCar(id));
 	}
 
+	/**
+	 * Rentable candidates for a location/type, as reservation sees them.
+	 *
+	 * <p>This is the first half of what {@code CarService.search} used to do in one
+	 * process. Reservation calls it and then subtracts the cars it knows are
+	 * already booked over the requested dates - the half that needs booking data.
+	 * Exposed on the internal contract rather than reusing the public browse
+	 * endpoint so that cross-service callers never see catalog's enums.
+	 */
+	@Transactional(readOnly = true)
+	public List<InternalCarView> findRentable(String location, CarType type) {
+		return carRepository.findByFilters(CarStatus.AVAILABLE, location, type).stream()
+				.map(InternalCarView::from)
+				.toList();
+	}
+
 	@Transactional(readOnly = true)
 	public CatalogStats stats() {
 		return new CatalogStats(

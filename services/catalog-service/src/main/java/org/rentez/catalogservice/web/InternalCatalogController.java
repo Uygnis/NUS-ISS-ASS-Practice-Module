@@ -1,5 +1,6 @@
 package org.rentez.catalogservice.web;
 
+import org.rentez.catalogservice.domain.CarType;
 import org.rentez.catalogservice.service.CarService;
 import org.rentez.catalogservice.web.dto.CatalogStats;
 import org.rentez.catalogservice.web.dto.InternalCarView;
@@ -7,7 +8,10 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 /**
  * Service-to-service endpoints. Not part of the public API.
@@ -37,6 +41,17 @@ public class InternalCatalogController {
 	@GetMapping("/cars/{id}")
 	public InternalCarView car(@PathVariable Long id) {
 		return carService.getInternalView(id);
+	}
+
+	/**
+	 * Rentable cars for a location/type. Reservation uses this as the candidate
+	 * set for a date-range availability search, then subtracts what it has booked.
+	 */
+	@GetMapping("/cars")
+	public List<InternalCarView> cars(
+			@RequestParam(required = false) String location,
+			@RequestParam(required = false) CarType type) {
+		return carService.findRentable(location, type);
 	}
 
 	/** Catalog's slice of the admin report, aggregated locally. */
