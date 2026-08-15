@@ -57,8 +57,20 @@ public class OutboxWriter {
 						booking.getStartDate(), booking.getEndDate()));
 	}
 
+	/**
+	 * Builds the event body exactly as notification-service's
+	 * {@code NotificationEventRequest} expects it - the field names here are a
+	 * cross-service contract, not local naming.
+	 *
+	 * <p>The same {@code eventId} goes into the payload and onto the row, from one
+	 * variable, so the id the consumer de-duplicates on and the id this service
+	 * records can never disagree.
+	 */
 	private void write(String eventType, Booking booking, String message) {
+		String eventId = OutboxEvent.newEventId();
+
 		ObjectNode payload = objectMapper.createObjectNode();
+		payload.put("eventId", eventId);
 		payload.put("recipientId", booking.getCustomerId());
 		payload.put("recipientEmail", booking.getCustomerEmail());
 		payload.put("type", eventType);
@@ -66,6 +78,6 @@ public class OutboxWriter {
 		payload.put("relatedEntityType", "BOOKING");
 		payload.put("relatedEntityId", booking.getId());
 
-		outboxRepository.save(new OutboxEvent(eventType, objectMapper.writeValueAsString(payload)));
+		outboxRepository.save(new OutboxEvent(eventId, eventType, objectMapper.writeValueAsString(payload)));
 	}
 }

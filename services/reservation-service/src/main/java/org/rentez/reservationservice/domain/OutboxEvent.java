@@ -34,7 +34,7 @@ public class OutboxEvent {
 	private Long id;
 
 	@Column(name = "event_id", nullable = false, unique = true, length = 36)
-	private String eventId = UUID.randomUUID().toString();
+	private String eventId;
 
 	@Column(name = "event_type", nullable = false, length = 64)
 	private String eventType;
@@ -61,9 +61,22 @@ public class OutboxEvent {
 	protected OutboxEvent() {
 	}
 
-	public OutboxEvent(String eventType, String payload) {
+	/**
+	 * The id is passed in rather than generated here so the caller can put the
+	 * same value into the payload it serialises. The relay then posts that payload
+	 * byte for byte, with no rewriting in transit - an earlier version spliced the
+	 * id into the JSON on the way out, which is string surgery on a structured
+	 * document and a good way to ship an unparseable body.
+	 */
+	public OutboxEvent(String eventId, String eventType, String payload) {
+		this.eventId = eventId;
 		this.eventType = eventType;
 		this.payload = payload;
+	}
+
+	/** Convenience for callers with no id of their own to propagate. */
+	public static String newEventId() {
+		return UUID.randomUUID().toString();
 	}
 
 	public void markDispatched() {
