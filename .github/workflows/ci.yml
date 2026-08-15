@@ -57,6 +57,7 @@ jobs:
           - account-service
           - catalog-service
           - notification-service
+          - payment-service
           - reservation-service
 
     defaults:
@@ -67,16 +68,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Java 21 everywhere. The poms, the Dockerfiles and this workflow used to
+      # disagree (17 / 21 / 17); `make check` already warns on anything but 21.
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: 21
           cache: maven
 
       - name: Make Maven Wrapper executable
         run: chmod +x mvnw
 
+      # Integration tests start a real MySQL 8 container via Testcontainers
+      # (@ServiceConnection). ubuntu-latest ships a working Docker daemon, so no
+      # service container is needed here. This is also the only place the Flyway
+      # migrations are executed automatically.
       - name: Build and run tests
         run: ./mvnw verify
 
@@ -135,32 +142,19 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: 21
           cache: maven
 
-      - name: Build account-service
-        working-directory: services/account-service
+      # Loops over services/*/ rather than listing each one. The previous form
+      # hard-coded four copy-pasted steps, so a newly added service was silently
+      # excluded from the scan until someone remembered to edit this file.
+      - name: Build all services
         run: |
-          chmod +x mvnw
-          ./mvnw clean compile -DskipTests
-
-      - name: Build catalog-service
-        working-directory: services/catalog-service
-        run: |
-          chmod +x mvnw
-          ./mvnw clean compile -DskipTests
-
-      - name: Build notification-service
-        working-directory: services/notification-service
-        run: |
-          chmod +x mvnw
-          ./mvnw clean compile -DskipTests
-
-      - name: Build reservation-service
-        working-directory: services/reservation-service
-        run: |
-          chmod +x mvnw
-          ./mvnw clean compile -DskipTests
+          for dir in services/*/; do
+            echo "::group::Building ${dir}"
+            (cd "${dir}" && chmod +x mvnw && ./mvnw -B clean compile -DskipTests)
+            echo "::endgroup::"
+          done
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3

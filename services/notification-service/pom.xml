@@ -27,7 +27,7 @@
 		<url/>
 	</scm>
 	<properties>
-		<java.version>17</java.version>
+		<java.version>21</java.version>
 	</properties>
 	<dependencies>
 		<dependency>
@@ -36,9 +36,48 @@
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-data-jpa</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-validation</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-webmvc</artifactId>
 		</dependency>
 
+		<!-- Stateless JWT validation. The token is issued by account-service and
+		     signed with the shared RENTEZ_JWT_SECRET (HS256), so every service
+		     authorizes locally and nothing calls account-service at runtime. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-security</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+		</dependency>
+
+		<!-- Flyway owns the schema (ddl-auto=validate). flyway-mysql is NOT
+		     optional: since Flyway 10 the MySQL support lives in its own module
+		     and flyway-core alone fails at startup with
+		     "No database found to handle jdbc:mysql://...". -->
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-core</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-mysql</artifactId>
+		</dependency>
+
+		<!-- MySQL, not MSSQL - see the note in catalog-service/pom.xml. -->
+		<dependency>
+			<groupId>com.mysql</groupId>
+			<artifactId>mysql-connector-j</artifactId>
+			<scope>runtime</scope>
+		</dependency>
 		<dependency>
 			<groupId>org.projectlombok</groupId>
 			<artifactId>lombok</artifactId>
@@ -51,7 +90,52 @@
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-data-jpa-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-validation-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-webmvc-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-security-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+
+		<!-- Tests run against a real MySQL 8 container via @ServiceConnection.
+		     Without this, @SpringBootTest has no database: Hibernate opens a JDBC
+		     connection just to resolve the dialect, and contextLoads fails on any
+		     machine that is not running `make infra`. It is also the only way the
+		     Flyway migrations are ever executed in CI.
+
+		     Do NOT substitute H2 - docs/ch01 forbids it, and Car.model_year already
+		     exists as a workaround for an H2-vs-MySQL reserved word disagreement.
+
+		     NOTE the artifact names. Spring Boot 4.1.0 manages Testcontainers 2.0.5,
+		     which renamed every module: it is testcontainers-mysql, NOT mysql. The
+		     1.x names still resolve from Central, so a copy-paste from any older
+		     guide silently mixes a 1.x module with the 2.x core and fails at
+		     runtime with moved-package errors. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-testcontainers</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-mysql</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-junit-jupiter</artifactId>
 			<scope>test</scope>
 		</dependency>
 	</dependencies>

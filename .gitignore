@@ -141,3 +141,13 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# OS files
+# This file is the stock Node/JS template and had no macOS rules, so .DS_Store
+# showed up as untracked on every `git status` run from a Mac.
+#
+# Not listed here on purpose: .idea/ is intentionally tracked (it carries shared
+# IDE run configs and has its own scoped .gitignore), and Java build output is
+# covered by the per-project .gitignore in backend/ and each services/*/.
+.DS_Store
+**/.DS_Store

@@ -9,10 +9,10 @@
 		<relativePath/> <!-- lookup parent from repository -->
 	</parent>
 	<groupId>org.rentez</groupId>
-	<artifactId>reservation-service</artifactId>
+	<artifactId>payment-service</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
-	<name>reservation-service</name>
-	<description>reservation-service</description>
+	<name>payment-service</name>
+	<description>payment-service</description>
 	<url/>
 	<licenses>
 		<license/>
@@ -59,9 +59,9 @@
 			<artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
 		</dependency>
 
-		<!-- Reservation is the only service with an outbound runtime dependency:
-		     it calls catalog for car details/pricing at booking time, and posts
-		     outbox events to notification. -->
+		<!-- Payment drives the one saga in the system: it reads the booking from
+		     reservation, then confirms (or compensates) it after the gateway call.
+		     Outbox events to notification go over the same client. -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-restclient</artifactId>

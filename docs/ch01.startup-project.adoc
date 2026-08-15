@@ -1,0 +1,779 @@
+= Chapter 1. Starting the Project
+:doctype: book
+:toc: left
+:toclevels: 3
+:sectnums:
+:sectnumlevels: 3
+:icons: font
+:source-highlighter: rouge
+:experimental:
+:docversion: v1.2
+:docstamp: rentez_startup_project_v1_2_20260810_1612SGT
+:revnumber: 1.2
+:revdate: 2026-08-10 16:12 SGT
+:project: RentEZ
+:repo: NUS-ISS-ASS-Practice-Module
+
+[.lead]
+Everything a RentEZ developer needs to go from a fresh `git clone` to a running,
+seeded, connectable stack — and to know, in one command, whether their database
+connection actually works.
+
+[NOTE]
+====
+*Document stamp:* `{docstamp}` +
+*Applies to:* `{repo}` — four Spring Boot 4.1 services, a React frontend, one
+MySQL instance with five schemas, and DynamoDB Local. +
+*Audience:* every member of Team 2. Read section <<quickstart>> on your first
+day; the rest is reference.
+====
+
+== What you are building
+
+RentEZ is a microservice platform. Locally it runs as nine containers, but you
+rarely need all nine at once — see <<modes>>.
+
+[cols="2,1,4",options="header"]
+|===
+| Component | Port | Purpose
+
+| Frontend (React + Vite)   | `3000` | The web application, with hot reload
+| API gateway (nginx)       | `8080` | *Single entry point.* Mirrors the AWS ALB's path routing
+| `account-service`         | `8081` | Identity and access — PRD module M1
+| `reservation-service`     | `8082` | Booking — PRD module M3
+| `catalog-service`         | `8083` | Fleet and vehicle catalogue — PRD module M2
+| `notification-service`    | `8084` | Notifications — PRD module M5
+| MySQL 8.0                 | `3306` | One instance, five schemas
+| Adminer                   | `8090` | Click-to-browse database UI
+| DynamoDB Local            | `8000` | Sessions, availability projection, audit trail
+|===
+
+The service ports are unchanged from the existing `docker-compose.yml`, so
+nothing you have already bookmarked breaks.
+
+IMPORTANT: The frontend talks to the *gateway* on `8080`, never to a service
+port directly. That is the same shape as production, where a single Application
+Load Balancer routes by path. One `VITE_API_BASE_URL` value works in both
+environments.
+
+[[quickstart]]
+== Five-minute start
+
+Your first day, in five commands.
+
+[source,bash]
+----
+git clone git@github.com:<org>/NUS-ISS-ASS-Practice-Module.git
+cd NUS-ISS-ASS-Practice-Module
+
+make check      # <1>
+make up         # <2>
+make seed       # <3>
+make db-check   # <4>
+----
+<1> Verifies Docker, JDK 21, Maven and Node are installed and that Docker has
+    enough memory. Creates `.env` from `.env.example` if it is missing.
+<2> Builds and starts everything. First run pulls images and resolves Maven
+    dependencies — allow ten minutes. Subsequent runs take under a minute.
+<3> Loads demo vehicles, users and bookings.
+<4> Confirms all four services can reach their own schema.
+
+Then open http://localhost:3000.
+
+.Expected output of `make db-check`
+[source,text]
+----
+  account-service       :8081   NO-DB rentez_auth
+  reservation-service   :8082   UP    rentez_booking
+  catalog-service       :8083   UP    rentez_fleet
+  notification-service  :8084   NO-DB rentez_notification
+----
+
+`NO-DB` for `account-service` and `notification-service` is *correct today* —
+neither owns persistence code yet, so both still have JPA commented out. `UP`
+means the datasource is reachable; `DOWN` means the service is not responding
+and you should go to <<troubleshooting>>.
+
+[[raw-compose]]
+=== Without `make`
+
+`make` is a thin wrapper — it exists so nobody has to memorise flags, not to
+hide anything. Every target has a plain Docker Compose equivalent, and you will
+need them if you are on Windows without WSL2, or if the `Makefile` is mid-edit.
+
+[cols="2,3",options="header"]
+|===
+| Make target | Docker Compose equivalent
+
+| `make up`
+| `docker compose --profile app up -d --build`
+
+| `make infra`
+| `docker compose up -d`
+
+| `make down`
+| `docker compose --profile app down`
+
+| `make clean`
+| `docker compose --profile app down -v`
+
+| `make logs S=catalog-service`
+| `docker compose logs -f catalog-service`
+
+| `make mysql`
+| `docker compose exec mysql mysql -uroot -prentez`
+
+| `make seed`
+| `docker compose exec -T mysql mysql -uroot -prentez < db/seed/01-demo-data.sql`
+|===
+
+.Start everything — backend services, frontend, database and tooling
+[source,bash]
+----
+docker compose --profile app up -d --build
+docker compose ps                                    # <1>
+docker compose logs -f                               # <2>
+----
+<1> Confirms which containers are running and which are healthy.
+<2> All services at once. Add a service name to narrow it.
+
+NOTE: The `app` profile is what separates the two modes. Services and the
+frontend carry `profiles: ["app"]`, so a bare `docker compose up` starts only
+the database, DynamoDB Local, Adminer and the gateway — Mode A. Adding
+`--profile app` starts everything — Mode B. See <<modes>>.
+
+== Prerequisites
+
+[cols="2,1,3",options="header"]
+|===
+| Tool | Version | Notes
+
+| Docker Desktop | 24+   | *Allocate at least 8 GB of memory* — see the warning below
+| JDK            | 21    | Temurin recommended: `sdk install java 21-tem`
+| Maven          | —     | Use the committed `./mvnw` wrapper; no separate install needed
+| Node.js        | 22    | Matches the version CI uses
+| Git            | 2.4+  | —
+| GNU Make       | any   | Ships with macOS and Linux. *Windows: use WSL2*, or the raw commands in <<raw-compose>>
+|===
+
+[WARNING]
+====
+*Docker Desktop defaults to 2 GB of memory on some installations.* Four JVMs
+plus MySQL under a 2 GB ceiling produces OOM kills with no useful error
+message — containers simply vanish and the logs say nothing.
+
+Set it in menu:Docker Desktop[Settings > Resources > Memory] to *8 GB* before
+your first `make up`. `make check` warns you if it is too low.
+====
+
+Only the person deploying to AWS needs `aws`, `kubectl`, `helm`, `terraform`
+and `jq`. *Four of five teammates never need an AWS account at all* — the local
+stack has no cloud dependency whatsoever.
+
+[[modes]]
+== The two development modes
+
+You will spend most of your time in *Mode A*.
+
+[cols="1,3,3",options="header"]
+|===
+| | Mode A — infrastructure only | Mode B — everything in Docker
+
+| Command
+| `make infra`
+| `make up`
+
+| What runs in Docker
+| MySQL, DynamoDB Local, Adminer, gateway
+| All of the above plus four services and the frontend
+
+| Where services run
+| From IntelliJ — btn:[Run] or btn:[Debug]
+| Inside containers
+
+| Restart after a code change
+| Under a second
+| ~3 s with DevTools, or a rebuild without
+
+| Breakpoints
+| Yes, natively
+| Only with remote-debug flags
+
+| Memory
+| ~400 MB
+| ~2.5 GB
+
+| Use it for
+| *All backend development*
+| Frontend work, integration testing, demos
+|===
+
+Mode A works with no configuration because every datasource property defaults
+to `localhost`:
+
+[source,properties]
+----
+spring.datasource.url=jdbc:mysql://${DB_HOST:localhost}:3306/rentez_fleet
+----
+
+Docker Compose overrides `DB_HOST=mysql`; your IDE uses the default. *One
+properties file, both modes, no Spring profiles to remember.*
+
+TIP: In IntelliJ, create one Run Configuration per service once, then use
+menu:Run[Run... > Edit Configurations > Compound] to launch several at once.
+
+== The database
+
+=== One instance, five schemas
+
+RentEZ uses *a single MySQL 8.0 instance hosting five independent schemas* —
+locally in Docker, and on AWS as one `db.t4g.micro` RDS instance. This matches
+PRD §2.1 and costs the same as one schema, because RDS bills the instance, not
+the databases on it.
+
+[NOTE]
+====
+In MySQL, `SCHEMA` and `DATABASE` are *synonyms*. "Five schemas" means five
+`CREATE DATABASE` statements. There is no `currentSchema=` URL parameter as
+there is in PostgreSQL — the schema name goes directly in the JDBC path.
+====
+
+[cols="2,2,2,2",options="header"]
+|===
+| Service | Schema | PRD module | Database user
+
+| `account-service`      | `rentez_auth`         | M1 Identity & Access        | `auth_user`
+| `catalog-service`      | `rentez_fleet`        | M2 Fleet & Catalogue        | `fleet_user`
+| `reservation-service`  | `rentez_booking`      | M3 Booking                  | `booking_user`
+| _not yet created_      | `rentez_payment`      | M4 Payment & Refund         | `payment_user`
+| `notification-service` | `rentez_notification` | M5 Notification             | `notification_user`
+|===
+
+CAUTION: The repository service names differ from the PRD module names — the
+PRD calls them `auth-service`, `vehicle-service`, `booking-service` and
+`payment-service`. Use the mapping above rather than guessing, and note that
+*`payment-service` does not exist in the repository yet*. Its schema is created
+anyway so the service can be added later without touching database setup.
+
+=== Why schemas rather than one shared database
+
+Each service gets its own database *user*, granted privileges on its own schema
+and nothing else.
+
+[source,sql]
+----
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES
+  ON rentez_auth.* TO 'auth_user'@'%';
+----
+
+There is no `GRANT ... ON *.*` anywhere. `auth_user` running
+`SELECT * FROM rentez_booking.bookings` receives a permission error, not a
+result set.
+
+[TIP]
+====
+*Screenshot that permission error.* It is the difference between _claiming_
+service boundaries in the final report and _demonstrating_ them, and it takes
+ten seconds to produce in Adminer.
+====
+
+Two rules keep the boundary honest:
+
+. *No foreign keys across schemas.* A booking row stores `vehicle_id` as a
+  plain identifier with no `REFERENCES` clause. Within a schema, foreign keys
+  are mandatory.
+. *Cross-service reads go through the owning service's API*, never through a
+  direct query into another schema.
+
+Follow both and PRD §2.1's claim holds: any one service could later be given
+its own database instance with *no schema change* — only a connection string.
+
+=== The initialisation script
+
+`db/init/01-schemas.sql` creates all five schemas, all five users and their
+grants. It is idempotent, so re-running is harmless.
+
+[source,sql]
+----
+-- rentez_startup_project_v1_1_20260810_1421SGT
+-- One MySQL instance, five schemas, five users. Idempotent.
+
+CREATE DATABASE IF NOT EXISTS rentez_auth
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+CREATE DATABASE IF NOT EXISTS rentez_fleet
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+CREATE DATABASE IF NOT EXISTS rentez_booking
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+CREATE DATABASE IF NOT EXISTS rentez_payment
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+CREATE DATABASE IF NOT EXISTS rentez_notification
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+
+-- DDL privileges are included because Flyway runs migrations as these users.
+CREATE USER IF NOT EXISTS 'auth_user'@'%' IDENTIFIED BY 'auth_pw';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES
+  ON rentez_auth.* TO 'auth_user'@'%';
+
+CREATE USER IF NOT EXISTS 'fleet_user'@'%' IDENTIFIED BY 'fleet_pw';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES
+  ON rentez_fleet.* TO 'fleet_user'@'%';
+
+CREATE USER IF NOT EXISTS 'booking_user'@'%' IDENTIFIED BY 'booking_pw';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES
+  ON rentez_booking.* TO 'booking_user'@'%';
+
+CREATE USER IF NOT EXISTS 'payment_user'@'%' IDENTIFIED BY 'payment_pw';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES
+  ON rentez_payment.* TO 'payment_user'@'%';
+
+CREATE USER IF NOT EXISTS 'notification_user'@'%' IDENTIFIED BY 'notification_pw';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES
+  ON rentez_notification.* TO 'notification_user'@'%';
+
+FLUSH PRIVILEGES;
+----
+
+Docker mounts this into `/docker-entrypoint-initdb.d/`, where MySQL runs it
+*once*, on first boot of an empty data volume.
+
+[IMPORTANT]
+====
+Editing `01-schemas.sql` after the volume exists has *no effect* — MySQL only
+runs the directory on an empty data directory. To re-apply it:
+
+[source,bash]
+----
+make clean && make up
+----
+
+That deletes the database volume and starts fresh.
+====
+
+On AWS the same script runs as a one-shot Kubernetes Job, because RDS sits
+inside the VPC and cannot be reached from a laptop. Same file, both
+environments.
+
+=== The NoSQL side
+
+Three DynamoDB tables run locally in DynamoDB Local — AWS's own emulator, so
+application code uses the unmodified AWS SDK and only the endpoint changes.
+
+[cols="2,2,4",options="header"]
+|===
+| Table | Owner | Purpose
+
+| `rentez-sessions`     | M1 | JWT sessions keyed on `jti`, self-expiring via TTL
+| `rentez-availability` | M2 | 90-day read projection. *A cache, never a source of truth*
+| `rentez-audit`        | M6 | Append-only audit trail, written by a shared library
+|===
+
+WARNING: `rentez-availability` must never be used to accept a booking. The
+authoritative answer lives in `reservation-service`. It is a CQRS read model
+and is eventually consistent — worth stating explicitly in the final report.
+
+== Configuration and secrets
+
+Configuration comes from `.env`, which is git-ignored. Copy the template once:
+
+[source,bash]
+----
+cp .env.example .env
+----
+
+.`.env.example`
+[source,properties]
+----
+# rentez_startup_project_v1_1_20260810_1421SGT
+# Local development only. Nothing here is a real credential.
+
+MYSQL_ROOT_PASSWORD=rentez
+MYSQL_HOST=localhost
+MYSQL_PORT=3306
+
+AUTH_DB_PASSWORD=auth_pw
+FLEET_DB_PASSWORD=fleet_pw
+BOOKING_DB_PASSWORD=booking_pw
+PAYMENT_DB_PASSWORD=payment_pw
+NOTIFICATION_DB_PASSWORD=notification_pw
+
+# Fake AWS credentials — DynamoDB Local does not validate them.
+# Never put real AWS keys in this file.
+AWS_REGION=ap-southeast-1
+AWS_ACCESS_KEY_ID=local
+AWS_SECRET_ACCESS_KEY=localsecret
+RENTEZ_AWS_DYNAMODB_ENDPOINT=http://localhost:8000
+
+# HS256 requires at least 32 bytes. Regenerate: openssl rand -base64 48
+RENTEZ_JWT_SECRET=local-dev-secret-change-me-min-32-chars
+----
+
+[CAUTION]
+====
+*Never commit `.env`.* The root `.gitignore` already excludes it (and
+`.env.*`) while explicitly permitting `.env.example`. Do not weaken those
+rules.
+
+On AWS, none of these values exist in files — they are read from AWS Secrets
+Manager at deploy time.
+====
+
+The `${VAR:default}` pattern in `application.properties` is deliberate: *the
+defaults are the IntelliJ values*, so Mode A needs no configuration at all.
+
+== Checking your database connection
+
+Four independent ways, because different people reach for different tools.
+
+=== Adminer — the visual one
+
+Open http://localhost:8090 and sign in:
+
+[cols="1,3",options="header"]
+|===
+| Field | Value
+
+| System   | MySQL
+| Server   | `mysql` (or `localhost` if you started only `make infra`)
+| Username | `auth_user`, `fleet_user`, `booking_user` …
+| Password | from `.env`
+| Database | the matching schema
+|===
+
+Log in as one service's user and try to browse another's schema. It will not
+appear. That is the isolation working.
+
+=== `make db-check` — the fast one
+
+[source,bash]
+----
+make db-check
+----
+
+Curls every service's health endpoint and prints one line each. This is the
+command to run before asking anyone for help.
+
+[[actuator-health]]
+=== Actuator — the detailed one
+
+[source,bash]
+----
+curl -s http://localhost:8083/actuator/health | jq .components.db
+----
+
+[source,json]
+----
+{
+  "status": "UP",
+  "details": { "database": "MySQL", "validationQuery": "isValid()" }
+}
+----
+
+This requires the following in every `application.properties` — without it only
+a bare `/actuator/health` exists and the `db` component is hidden:
+
+[source,properties]
+----
+management.endpoint.health.probes.enabled=true
+management.endpoints.web.exposure.include=health,info,metrics
+management.endpoint.health.show-details=when_authorized
+----
+
+[IMPORTANT]
+====
+`probes.enabled=true` is *not optional*. Kubernetes readiness and liveness
+probes on AWS target `/actuator/health/readiness` and
+`/actuator/health/liveness`. Without this property both return 404, every pod
+fails readiness, never joins the load balancer, and the deployment appears to
+hang for no visible reason.
+====
+
+=== The MySQL client — the definitive one
+
+[source,bash]
+----
+docker compose exec mysql mysql -ufleet_user -pfleet_pw -e "SHOW DATABASES;"
+----
+
+Only `rentez_fleet` and `information_schema` should be listed.
+
+== Running the tests
+
+[source,bash]
+----
+make test                                  # everything
+cd services/catalog-service && ./mvnw test # one service
+cd frontend && npm test                    # frontend
+----
+
+Three tiers, roughly in the proportion you should write them:
+
+[cols="1,2,1,3",options="header"]
+|===
+| Tier | Tool | Speed | Use for
+
+| Unit        | Plain JUnit, no Spring context   | ms    | Business logic, validation, price calculation
+| Slice       | `@DataJpaTest` + Testcontainers  | ~2 s  | Repositories, queries, migrations
+| Integration | `@SpringBootTest` + Testcontainers | ~10 s | Controllers end to end, wiring
+|===
+
+Tests get a *real MySQL* from Testcontainers, not H2:
+
+[source,java]
+----
+@SpringBootTest
+@Testcontainers
+class CatalogServiceApplicationTests {
+
+    @Container
+    @ServiceConnection                       // <1>
+    static MySQLContainer<?> db = new MySQLContainer<>("mysql:8.0");
+
+    @Test
+    void contextLoads() { }
+}
+----
+<1> `@ServiceConnection` wires `spring.datasource.*` from the container
+    automatically. No `@DynamicPropertySource`, no property juggling.
+
+[WARNING]
+====
+*Do not use H2, even in "MySQL compatibility mode".* It diverges from real
+MySQL on exactly the things this project uses — `JSON` columns, `ON DUPLICATE
+KEY UPDATE`, `CHECK` constraints, unsigned integers. Tests that pass against H2
+and fail against RDS are worse than no tests.
+
+Testcontainers costs about 40 seconds on first run, then caches. Docker must be
+running — it is available on GitHub's `ubuntu-latest` runners too.
+====
+
+Do not start a Spring context to test a pure function. If `contextLoads()`
+remains the only test in a service, `./mvnw verify` is a slow way of proving
+nothing.
+
+== Everyday commands
+
+[cols="2,4",options="header"]
+|===
+| Command | What it does
+
+| `make check`    | Verify tooling and Docker memory; create `.env` if missing
+| `make infra`    | Mode A — database, DynamoDB, Adminer, gateway only
+| `make up`       | Mode B — the whole stack
+| `make down`     | Stop everything, *keep* database data
+| `make clean`    | Stop everything and *delete* the data volume
+| `make seed`     | Load demo data
+| `make db-check` | Verify every service's database connection
+| `make test`     | Run all backend tests
+| `make logs S=catalog-service` | Tail one service's logs
+| `make psql` / `make mysql`    | Open a SQL shell as root
+|===
+
+== Repository status
+
+[NOTE]
+====
+*Correction, v1.2.* An earlier version of this chapter stated that
+`catalog-service` and `reservation-service` could not start, because
+`spring-boot-starter-data-jpa` was on the classpath with no datasource.
+
+*That was wrong.* The JPA starter was inside an XML comment in all three poms
+that contained it. The finding came from a `grep` that does not understand XML
+comments and was never verified against a build. **No service was ever broken,
+and CI was never red for this reason.**
+====
+
+=== Done
+
+[cols="1,4",options="header"]
+|===
+| | Change
+
+| Database
+| `mysql`, `dynamodb`, `dynamodb-init`, `adminer` and `gateway` services;
+  `healthcheck` and `depends_on` throughout; `db/init/01-schemas.sql`;
+  `.env.example`; the `Makefile`.
+
+| JPA enabled
+| `spring-boot-starter-data-jpa` and its test companion *uncommented* in
+  `catalog-service` and `reservation-service`. The commented `mssql-jdbc`
+  placeholder replaced with `com.mysql:mysql-connector-j` — which also settles
+  the proposal's MSSQL-versus-MySQL contradiction in code.
+
+| Datasources
+| `spring.datasource.*` in `catalog-service` (`rentez_fleet`) and
+  `reservation-service` (`rentez_booking`), with Hikari capped at 5.
+
+| Actuator
+| `probes.enabled=true` and `show-details=always` in all four services, so
+  `make db-check` can read the `db` component and Kubernetes probes will not
+  404 on `/actuator/health/readiness`.
+
+| Build caching
+| `RUN mvn -B dependency:go-offline` in its own layer in all four
+  `Dockerfile.dev`. Second and subsequent builds no longer re-resolve the
+  whole dependency tree.
+
+| Host ports
+| `MYSQL_PORT`, `GATEWAY_PORT`, `DYNAMODB_PORT`, `ADMINER_PORT` and
+  `FRONTEND_PORT` are overridable in `.env`, for machines where something else
+  already owns a port.
+|===
+
+=== Still open
+
+[cols="1,3,3",options="header"]
+|===
+| # | Item | Fix
+
+| 1
+| *Java version differs in three places.* `pom.xml` says 17, `Dockerfile.dev`
+  uses 21, CI uses 17. Spring Boot 4.1 supports both, so nothing fails to
+  compile — but you test on 17 and ship a 21 runtime.
+| Standardise on *Java 21*: `<java.version>21</java.version>` in all four poms
+  and `java-version: 21` in both CI jobs.
+
+| 2
+| *`account-service` and `notification-service` have no datasource.* Both still
+  have JPA commented out, so `make db-check` reports `NO-DB` for them. This is
+  correct, not a defect — neither owns persistence code yet.
+| Apply the same three edits (uncomment JPA, add the driver, add
+  `spring.datasource.*` for `rentez_auth` / `rentez_notification`) when M1 and
+  M5 work begins.
+
+| 3
+| *No Flyway, and no migrations.* `ddl-auto=none`, so the schemas exist but
+  contain no tables.
+| Add `flyway-core` and `flyway-mysql` in the same commit as the first
+  `V1__init.sql`. See `docs/ch02.database-schema.adoc`.
+
+| 4
+| *`Dockerfile.dev` still uses `node:20-alpine` for the frontend while CI uses
+  Node 22*, and Node 20 reached end of life on 30 April 2026.
+| Pin `node:22-alpine`.
+
+| 5
+| *No Testcontainers.* `./mvnw verify` runs `@SpringBootTest` with no database
+  on the CI runner, which will fail once entities exist.
+| Add `org.testcontainers:mysql` and `spring-boot-testcontainers`, and use
+  `@ServiceConnection`.
+|===
+
+CAUTION: A *Maven cache volume in `docker-compose.yml` would do nothing* — an
+earlier version of this chapter suggested one. `mvn package` runs at image
+*build* time and compose volumes exist only at *run* time. The dependency
+layer above is the fix; a BuildKit cache mount
+(`RUN --mount=type=cache,target=/root/.m2 …`) is the alternative.
+
+[[troubleshooting]]
+== Troubleshooting
+
+[qanda]
+`make up` hangs at "waiting for services"::
+Docker needs 8 GB. Check menu:Docker Desktop[Settings > Resources]. Then
+`make logs S=<service>` — the real error is almost always visible there.
+
+`Failed to determine a suitable driver class`::
+The service has JPA on the classpath but no datasource. This should not happen
+in `catalog-service` or `reservation-service` — both are configured. If you see
+it in `account-service` or `notification-service`, you have uncommented JPA
+without adding the driver and `spring.datasource.*`.
+
+`Access denied for user 'fleet_user'@'…'`::
+The init script did not run, because the data volume already existed when you
+added it. Run `make clean && make up`.
+
+`Unknown database 'rentez_fleet'`::
+Same cause as above. `make clean && make up`.
+
+`Communications link failure` from IntelliJ::
+You are in Mode A but the database is not running. `make infra` first. Confirm
+with `docker compose ps`.
+
+Actuator returns 404 on `/actuator/health/readiness`::
+`management.endpoint.health.probes.enabled=true` is missing. See
+<<actuator-health>>.
+
+Testcontainers fails with "Could not find a valid Docker environment"::
+Docker Desktop is not running. On Colima, export
+`DOCKER_HOST=unix://$HOME/.colima/default/docker.sock`.
+
+Port already allocated::
+Something else holds the port — often a previously started stack.
+`docker compose down` then retry, or `lsof -i :3306` to find the culprit.
+
+Frontend loads but every API call fails::
+Check `VITE_API_BASE_URL` points at `http://localhost:8080` (the gateway), not
+a service port, and that the gateway container is healthy.
+
+== Conventions worth knowing on day one
+
+* *Flyway owns the schema.* `spring.jpa.hibernate.ddl-auto=validate`, never
+  `update`. `validate` fails loudly when an entity and the migrations have
+  drifted; `update` silently mutates the database and hides the drift until
+  production.
+* *Never edit an applied migration.* The checksum check will fail on every
+  teammate's laptop simultaneously. Write a new `V<n>__…sql`.
+* *Seed data is not a migration.* Migrations are schema and live in version
+  control forever; seed data is throwaway demo content and belongs in
+  `make seed`. Mixing them puts fake customers in your production schema
+  history.
+* *Never expose an internal `BIGINT` primary key* in an API response or URL.
+  Public identifiers are ULIDs — see PRD §2.2.
+* *Cap the connection pool.* `spring.datasource.hikari.maximum-pool-size=5`.
+  On AWS, `db.t4g.micro` allows roughly 85 connections; ten booking pods at the
+  default pool of 10 would exhaust it at exactly the moment the autoscaler
+  starts working, and the load test would look like a scaling failure when it
+  is a configuration failure.
+
+== Where to go next
+
+[cols="2,4",options="header"]
+|===
+| Document | Contents
+
+| PRD 00 — Foundation | Module map, cross-cutting conventions, traceability, data model overview
+| PRD 01–07          | Per-module functional requirements and entity definitions
+| Infrastructure Design | The ephemeral EKS model, cost control, CI/CD
+| `aws/README.md`    | `up.sh` / `down.sh` — creating and destroying the AWS environment
+|===
+
+'''
+
+[.text-center]
+_{docstamp}_ +
+_Update this stamp and the change table below on every revision._
+
+== Change table
+
+[cols="1,2,4,4",options="header"]
+|===
+| Version | Date (SGT) | Change | Rationale
+
+| v1.0
+| 2026-08-10 13:33
+| Initial developer startup guide: two development modes, one MySQL instance
+  with five schemas and per-service users, DynamoDB Local, four ways to verify
+  a database connection, testing tiers, and the three defects blocking
+  adoption.
+| First onboarding document for the application repository. Existing service
+  ports preserved so nothing already bookmarked breaks.
+
+| v1.1
+| 2026-08-10 14:21
+| Added <<raw-compose>> with a Docker Compose equivalent for every `make`
+  target, and added GNU Make to the prerequisites table with a Windows note.
+| The guide was unusable for anyone without `make` — notably Windows users
+  without WSL2 — and a wrapper that hides its underlying command is
+  obstructive the moment it misbehaves.
+
+| v1.2
+| 2026-08-10 16:12
+| *Corrected a false defect claim.* `spring-boot-starter-data-jpa` was
+  commented out, not active — `catalog-service` and `reservation-service` were
+  never broken and CI was never red. Replaced "Known issues you must fix first"
+  with "Repository status", splitting what is now done from what remains.
+  Removed the incorrect Maven-cache-volume advice.
+| The original finding came from a `grep` that does not parse XML comments and
+  was never verified against a build. A guide that tells developers to fix
+  something that was never broken costs more trust than it saves time.
+|===
