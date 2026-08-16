@@ -22,8 +22,3 @@ Makefile                         @Uygnis
 db/                              @Uygnis
 scripts/                         @Uygnis
 docs/                            @Uygnis
-
-# The pre-split monolith. Frozen as a read-only parity reference while its
-# domains are ported into services/*; delete once each service reaches parity.
-# No further feature work belongs here.
-backend/                         @Uygnis
