@@ -2,8 +2,10 @@ package org.rentez.accountservice.web;
 
 import org.rentez.accountservice.domain.Role;
 import org.rentez.accountservice.security.CurrentUser;
+import org.rentez.accountservice.service.ReportingService;
 import org.rentez.accountservice.service.UserService;
 import org.rentez.accountservice.web.dto.AuditLogResponse;
+import org.rentez.accountservice.web.dto.ReportSummary;
 import org.rentez.accountservice.web.dto.UserResponse;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -31,9 +33,11 @@ import java.util.List;
 public class AdminUserController {
 
 	private final UserService userService;
+	private final ReportingService reportingService;
 
-	public AdminUserController(UserService userService) {
+	public AdminUserController(UserService userService, ReportingService reportingService) {
 		this.userService = userService;
+		this.reportingService = reportingService;
 	}
 
 	@GetMapping("/users")
@@ -57,5 +61,17 @@ public class AdminUserController {
 	@GetMapping("/audit-log")
 	public List<AuditLogResponse> auditLog(@RequestParam(defaultValue = "100") int limit) {
 		return userService.recentAuditLog(limit);
+	}
+
+	/**
+	 * Was {@code GET /api/admin/reports/summary}, and returns the same numbers.
+	 *
+	 * <p>Composed from catalog, reservation and payment rather than computed here.
+	 * Degrades rather than fails: a section whose service did not answer comes
+	 * back null with {@code partial: true}.
+	 */
+	@GetMapping("/reports/summary")
+	public ReportSummary reportSummary() {
+		return reportingService.summary();
 	}
 }
