@@ -27,6 +27,16 @@ x-spring-env: &spring-env
   AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-local}
   AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-localsecret}
   RENTEZ_JWT_SECRET: ${RENTEZ_JWT_SECRET:-local-dev-secret-change-me-min-32-chars}
+  # Empty by default. Set SPRING_PROFILES_ACTIVE=seed to load the demo admin,
+  # staff and customer accounts and the starter fleet:
+  #
+  #   SPRING_PROFILES_ACTIVE=seed make up
+  #
+  # The seeders are profile-gated because MySQL persists between runs, unlike the
+  # monolith's in-memory H2 - unconditional seeding would violate the email
+  # unique constraint on the second boot. They are also idempotent, so re-running
+  # with the profile on is safe.
+  SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-}
   # Service-to-service base URLs. These bypass the gateway deliberately: the
   # gateway is the PUBLIC edge and returns 404 for every /internal path, which
   # is exactly what these calls use. Docker's embedded DNS resolves the service
@@ -137,7 +147,13 @@ services:
     volumes:
       - ./scripts/gateway.conf:/etc/nginx/conf.d/default.conf:ro
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
+      # 127.0.0.1, NOT localhost. gateway.conf declares `listen 80;` which binds
+      # IPv4 only, and nginx's 10-listen-on-ipv6-by-default.sh cannot add the IPv6
+      # listener because the config above is mounted read-only. Inside the
+      # container `localhost` resolves to ::1 first, so the probe was refused and
+      # the gateway sat permanently unhealthy while serving traffic perfectly.
+      # Matches the 127.0.0.1 the Spring healthchecks already use.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
       interval: 10s
       timeout: 3s
       retries: 5
