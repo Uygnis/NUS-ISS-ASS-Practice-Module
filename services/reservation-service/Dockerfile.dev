@@ -4,9 +4,15 @@ FROM maven:3.9.9-eclipse-temurin-21 AS builder
 WORKDIR /app
 
 COPY pom.xml .
+
+# Resolve dependencies in their OWN layer. Without this, `COPY src` invalidates
+# the layer below it and every source change re-downloads the entire Maven
+# tree - minutes per change, per developer.
+RUN mvn -B dependency:go-offline
+
 COPY src ./src
 
-RUN mvn clean package -DskipTests
+RUN mvn -B clean package -DskipTests
 
 # Runtime stage
 FROM eclipse-temurin:21-jre

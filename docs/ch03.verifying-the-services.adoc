@@ -1,0 +1,500 @@
+= Chapter 3 — Verifying the services
+:toc: macro
+:toclevels: 2
+:icons: font
+:source-highlighter: highlight.js
+
+[.lead]
+How to start RentEZ and prove the whole rental flow works: automated checks first, then a manual walkthrough, then the failure modes that are the actual reason the system is split into services.
+
+Every command below has been run against the stack. Where output is shown, that is real output.
+
+toc::[]
+
+== Before you start
+
+You need Docker Desktop (8 GB allocated), JDK 21, and GNU Make. Check it in one step:
+
+[source,bash]
+----
+make check
+----
+
+It verifies the toolchain, warns if Docker has under 8 GB, creates `.env` from `.env.example` if missing, and confirms the passwords there match `db/init/01-schemas.sql`.
+
+WARNING: The full stack is five JVMs plus MySQL, DynamoDB Local, Adminer and nginx — roughly 5.5 GB. Under 8 GB, containers get OOM-killed with no useful error.
+
+== Starting the stack
+
+Two modes. Both start the infrastructure; they differ in where the services run.
+
+[cols="1,2,2"]
+|===
+| | *Mode A — `make infra`* | *Mode B — `make up`*
+
+| In Docker
+| MySQL, DynamoDB, Adminer, gateway
+| the above, plus all five services
+
+| Services run
+| from IntelliJ, against `localhost`
+| in containers
+
+| Restart after a change
+| under a second
+| ~40 s rebuild
+
+| Use for
+| day-to-day backend work
+| integration testing, demos, this chapter
+|===
+
+For everything in this chapter, use Mode B *with the seed profile*, which loads the demo accounts and the starter fleet:
+
+[source,bash]
+----
+SPRING_PROFILES_ACTIVE=seed make up
+----
+
+The seeders are profile-gated on purpose. MySQL persists between runs — unlike the monolith's in-memory H2 — so unconditional seeding would violate the email unique constraint on the second boot. They are also idempotent, so re-running with the profile on is safe.
+
+Services need about 40 seconds to become healthy. Watch them:
+
+[source,bash]
+----
+make ps
+----
+
+=== The demo accounts
+
+Local development fixtures only. They exist solely because the `seed` profile is active, and that profile must never be enabled in a deployed environment.
+
+[cols="2,2,1"]
+|===
+| Email | Password | Role
+
+| `admin@nusiss.edu` | `Admin123!` | ADMIN
+| `staff@nusiss.edu` | `Staff123!` | STAFF
+| `customer@nusiss.edu` | `Customer123!` | CUSTOMER
+|===
+
+== Automated verification
+
+Four checks, cheapest first. If all four pass, the system works.
+
+=== 1. Every service reached its own schema
+
+[source,bash]
+----
+make db-check
+----
+
+....
+  SERVICE                PORT    STATUS   SCHEMA
+  account-service        :8081   UP       rentez_auth
+  reservation-service    :8082   UP       rentez_booking
+  catalog-service        :8083   UP       rentez_fleet
+  notification-service   :8084   UP       rentez_notification
+  payment-service        :8085   UP       rentez_payment
+....
+
+=== 2. The schema boundary is real
+
+[source,bash]
+----
+make db-isolation
+----
+
+An *"Access denied"* is the *correct* result:
+
+....
+ERROR 1142 (42000): SELECT command denied to user 'auth_user'@'localhost' for table 'booking'
+....
+
+This is the evidence that schema-per-service isolation is enforced by MySQL grants rather than by convention. Any service could later be moved to its own database instance with a connection-string change and no schema change.
+
+=== 3. The whole flow, end to end
+
+[source,bash]
+----
+./scripts/smoke.sh
+----
+
+33 checks: register, login, browse, availability, book, pay, notify, refund, report. It drives everything through the *gateway only* (`:8080`), never a service port — which is what makes it exercise the nginx routing, the shared-secret JWT and the cross-service calls the way a real client meets them.
+
+It also asserts the things that regress silently: no BCrypt hash in any response, `/internal` paths refused at the edge, overlapping bookings rejected, a booked car leaving availability and returning after a refund, and an idempotent payment replay returning the original payment.
+
+=== 4. The unit and integration tests
+
+[source,bash]
+----
+make test-backend
+----
+
+70 tests across the five services, each against a real MySQL 8 container via Testcontainers. This is also the only place the Flyway migrations run automatically and Hibernate validates the entities against them.
+
+NOTE: These need Docker. Without it, use `./mvnw verify -DskipTests` to compile only.
+
+== Manual walkthrough
+
+Everything goes through `http://localhost:8080`. Never call a service port directly — that bypasses the gateway and proves nothing about routing.
+
+=== Log in
+
+[source,bash]
+----
+curl -sS -X POST http://localhost:8080/api/accounts/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"customer@nusiss.edu","password":"Customer123!"}'
+----
+
+[source,json]
+----
+{
+  "token": "eyJhbGciOiJIUzI1NiJ9...",
+  "tokenType": "Bearer",
+  "userId": 3,
+  "fullName": "Cara Customer",
+  "role": "CUSTOMER"
+}
+----
+
+Keep the token to hand:
+
+[source,bash]
+----
+TOKEN=$(curl -sS -X POST http://localhost:8080/api/accounts/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"customer@nusiss.edu","password":"Customer123!"}' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
+----
+
+Decode it to see why no service needs to call account-service:
+
+[source,bash]
+----
+echo "$TOKEN" | cut -d. -f2 | python3 -c \
+  'import sys,base64,json;s=sys.stdin.read().strip();s+="="*(-len(s)%4);print(json.dumps(json.loads(base64.urlsafe_b64decode(s)),indent=2))'
+----
+
+[source,json]
+----
+{ "sub": "customer@nusiss.edu", "role": "CUSTOMER", "userId": 3, "iat": ..., "exp": ... }
+----
+
+`role` and `userId` are in the token, so every service authorizes locally against the shared secret. The monolith wrote these same claims and then ignored them, re-reading the user from the database on every request.
+
+The 15-minute expiry is deliberate: authorization is now only as fresh as the token, so disabling an account takes effect within that window rather than the monolith's 24 hours.
+
+=== Browse and check availability (both public)
+
+[source,bash]
+----
+curl -sS http://localhost:8080/api/catalog/cars
+
+curl -sS 'http://localhost:8080/api/reservations/availability?startDate=2032-06-10&endDate=2032-06-12'
+----
+
+The second one is worth understanding. In the monolith this was `GET /api/cars?startDate=&endDate=`, served by catalog. It lives in reservation now because the filter needs booking data — leaving it in catalog would have meant catalog querying reservation while reservation already queries catalog, and neither service could then be built or deployed alone.
+
+=== Book a car
+
+[source,bash]
+----
+curl -sS -X POST http://localhost:8080/api/reservations/bookings \
+  -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" \
+  -d '{"carId":1,"startDate":"2032-06-10","endDate":"2032-06-12","pickupLocation":"Jurong"}'
+----
+
+[source,json]
+----
+{
+  "id": 7, "customerId": 3, "carId": 1,
+  "carMake": "Toyota", "carModel": "Corolla", "carType": "SEDAN",
+  "dailyRate": 65.0, "totalAmount": 195.0,
+  "status": "PENDING_PAYMENT"
+}
+----
+
+Two things to notice. The total is 195.00 — three *inclusive* days at 65.00, matching the monolith exactly. And `carMake`/`carModel`/`carType`/`dailyRate` are *snapshots* taken from catalog at booking time, which is what lets a booking still render, and still explain its own total, after the car is repriced or retired.
+
+=== Pay
+
+[source,bash]
+----
+curl -sS -X POST http://localhost:8080/api/payments \
+  -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" \
+  -H 'Idempotency-Key: demo-key-001' \
+  -d '{"bookingId":7,"method":"CARD","cardNumber":"4111111111111111"}'
+----
+
+[source,json]
+----
+{
+  "id": 4, "bookingId": 7, "amount": 195.0, "currency": "SGD",
+  "status": "SUCCESS", "confirmState": "CONFIRMED",
+  "transactionRef": "TXN-d7bc81f3-..."
+}
+----
+
+`confirmState: CONFIRMED` means the saga completed: payment charged, then reservation confirmed the booking. Check the booking agrees:
+
+[source,bash]
+----
+curl -sS http://localhost:8080/api/reservations/bookings/7 -H "Authorization: Bearer $TOKEN"
+----
+
+Send the *same* `Idempotency-Key` again and you get the original payment back, not a second charge.
+
+TIP: There is no `amount` field in the request, by design. The charge is always the booking's own total, read from reservation. Letting a client name the price is the oldest mistake in payment APIs.
+
+=== See the notifications
+
+[source,bash]
+----
+curl -sS http://localhost:8080/api/notifications/me -H "Authorization: Bearer $TOKEN"
+----
+
+....
+BOOKING_CONFIRMED  - Your booking #7 for Toyota Corolla from 2032-06-10 to 2032-06-12 is confirmed.
+PAYMENT_RECEIPT    - Payment of SGD 195.00 received for booking #7 (ref TXN-d7bc81f3-...).
+....
+
+These arrive from *two different services* — reservation sent the first, payment the second — and neither called notification directly. Each wrote an outbox row in the same transaction as its business change, and a relay delivered it within a couple of seconds. Allow ~2 s after paying.
+
+=== Refund (admin)
+
+[source,bash]
+----
+ADMIN=$(curl -sS -X POST http://localhost:8080/api/accounts/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@nusiss.edu","password":"Admin123!"}' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
+
+curl -sS -X POST http://localhost:8080/api/payments/4/refund -H "Authorization: Bearer $ADMIN"
+----
+
+The payment becomes `REFUNDED`, the booking is released to `CANCELLED`, and the car returns to availability. Verify all three.
+
+=== The admin report
+
+[source,bash]
+----
+curl -sS http://localhost:8080/api/accounts/admin/reports/summary -H "Authorization: Bearer $ADMIN"
+----
+
+[source,json]
+----
+{
+  "totalCars": 5, "availableCars": 5, "carsInMaintenance": 0,
+  "totalBookings": 5, "confirmedBookings": 1, "cancelledBookings": 3,
+  "totalRevenue": 195.0,
+  "bookingsByCarType": { "ELECTRIC": 3, "SEDAN": 2 },
+  "partial": false, "unavailableSections": []
+}
+----
+
+Same figures the monolith reported, but nothing is aggregated centrally: each service answers its own slice with a local query and this composes them. `bookingsByCarType` is a `GROUP BY` in reservation, possible because the car type is snapshotted onto the booking row.
+
+== Proving the interesting parts
+
+The checks above show the happy path. These show why the architecture is shaped the way it is — and they are the ones worth demonstrating.
+
+=== Authorization is enforced per role
+
+[source,bash]
+----
+curl -o /dev/null -w '%{http_code}\n' http://localhost:8080/api/accounts/admin/users                            # 401
+curl -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/accounts/admin/users   # 403
+curl -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $ADMIN" http://localhost:8080/api/accounts/admin/users   # 200
+----
+
+=== Internal endpoints are not public
+
+[source,bash]
+----
+curl -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $ADMIN" \
+  http://localhost:8080/api/reservations/internal/stats     # 404
+----
+
+404 even for an admin. Service-to-service endpoints are blocked at the gateway by a regex location, and the services additionally require a `SERVICE`-role token — because compose publishes ports 8081–8085 on the host and anything local could otherwise skip the gateway entirely.
+
+=== Double-booking is impossible
+
+Book a car, then try an overlapping range for the same car:
+
+[source,bash]
+----
+curl -sS -X POST http://localhost:8080/api/reservations/bookings \
+  -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" \
+  -d '{"carId":1,"startDate":"2032-06-11","endDate":"2032-06-14"}'
+----
+
+....
+409  "This car is already booked for part of that date range"
+....
+
+The message is the monolith's, but the mechanism is not. The monolith read availability and then inserted, with no transaction in between, so two simultaneous requests could both be told the car was free. Now a `booking_day` row is claimed per rental day under a `(car_id, day)` primary key and the *database* decides. `ConcurrentBookingTest` races 8 threads for one car and asserts exactly one wins.
+
+=== A declined payment is still recorded
+
+Card numbers starting `0000` always decline (the mock gateway seam, ported unchanged):
+
+[source,bash]
+----
+curl -sS -X POST http://localhost:8080/api/payments \
+  -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" \
+  -d '{"bookingId":8,"method":"CARD","cardNumber":"0000111122223333"}'
+----
+
+....
+402  "Payment was declined by the gateway"
+....
+
+The interesting part is what survives the error:
+
+[source,bash]
+----
+docker compose exec mysql mysql -uroot -prentez \
+  -e "select id,booking_id,status,confirm_state,failure_reason from rentez_payment.payment order by id desc limit 2;"
+----
+
+....
+5   8   FAILED    NOT_APPLICABLE   Declined by gateway
+4   7   SUCCESS   CONFIRMED        NULL
+....
+
+The failed attempt and its `PAYMENT_FAILED` audit row are committed *before* the exception is thrown. Wrapping that in a transaction would roll both back and erase every record of declined payments — the monolith depended on the same ordering. `NOT_APPLICABLE` marks it as having no saga to finish, so the reconciliation sweeper leaves it alone.
+
+=== One service down does not take the others with it
+
+[source,bash]
+----
+docker compose stop payment-service
+
+curl -sS http://localhost:8080/api/accounts/admin/reports/summary -H "Authorization: Bearer $ADMIN"
+----
+
+[source,json]
+----
+{
+  "totalCars": 5, "totalBookings": 5,
+  "totalRevenue": null,
+  "partial": true,
+  "unavailableSections": ["payment"]
+}
+----
+
+The dashboard degrades and *says so*. Missing sections are `null`, never zero — `"totalRevenue": 0` reads as a business fact rather than "payment-service is down", and an admin acting on that number would be acting on a lie.
+
+Booking still works while payment is stopped:
+
+[source,bash]
+----
+curl -o /dev/null -w '%{http_code}\n' -X POST http://localhost:8080/api/reservations/bookings \
+  -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" \
+  -d '{"carId":3,"startDate":"2033-01-05","endDate":"2033-01-06"}'      # 201
+
+docker compose start payment-service
+----
+
+=== Notifications survive a notification outage
+
+Stop notification-service, cancel a booking, and the cancellation still succeeds — the event waits in the outbox:
+
+[source,bash]
+----
+docker compose stop notification-service
+curl -sS -X DELETE http://localhost:8080/api/reservations/bookings/9 -H "Authorization: Bearer $TOKEN"   # 200
+
+docker compose exec mysql mysql -uroot -prentez \
+  -e "select event_type,status,attempt_count from rentez_booking.outbox_event order by id desc limit 3;"
+----
+
+The row sits `PENDING` with a rising `attempt_count`. Start notification-service again and it is delivered within a couple of seconds, with no duplicate — the consumer de-duplicates on `event_id`.
+
+In the monolith, `BookingService` called `notificationService.bookingCancelled(...)` inline, so a notification failure propagated straight back into the cancellation.
+
+== Inspecting state
+
+=== Adminer
+
+http://localhost:8090 — server `mysql`, user `root`, password from `.env`. Browse all five schemas.
+
+Per-service credentials, if you want to see the isolation from the inside: `auth_user`, `fleet_user`, `booking_user`, `payment_user`, `notification_user`.
+
+=== Useful queries
+
+[source,bash]
+----
+# the double-booking guard, one row per rented day
+docker compose exec mysql mysql -uroot -prentez \
+  -e "select * from rentez_booking.booking_day order by car_id, day limit 10;"
+
+# outbox delivery across both producers
+docker compose exec mysql mysql -uroot -prentez \
+  -e "select event_type,status,attempt_count from rentez_booking.outbox_event;"
+docker compose exec mysql mysql -uroot -prentez \
+  -e "select event_type,status,attempt_count from rentez_payment.outbox_event;"
+
+# payments needing reconciliation — should normally be empty
+docker compose exec mysql mysql -uroot -prentez \
+  -e "select id,booking_id,status,confirm_state,last_error from rentez_payment.payment
+      where confirm_state in ('PENDING','AWAITING_COMPENSATION') and status in ('SUCCESS','REFUNDED');"
+----
+
+=== Logs
+
+[source,bash]
+----
+make logs S=reservation-service
+----
+
+Notification delivery is logged as `[notification -> email] (TYPE) message` — that is the mock send seam, the single place to swap in a real email or SMS provider.
+
+=== DynamoDB
+
+[source,bash]
+----
+make dynamo
+----
+
+Lists `rentez-sessions`, `rentez-availability` and `rentez-audit`. These are provisioned but *not yet used* — audit currently lives in each service's own MySQL schema. See ch02 for the intended future use.
+
+== Shutting down
+
+[source,bash]
+----
+make down     # stop everything, keep the data
+make clean    # stop and DELETE the volumes
+----
+
+`make clean` is what you want if you need `db/init/01-schemas.sql` to run again — it only executes on a first boot against an empty volume.
+
+== Troubleshooting
+
+[cols="2,3"]
+|===
+| Symptom | Cause and fix
+
+| Containers die with no error
+| Docker has under 8 GB. Raise it in Docker Desktop > Settings > Resources.
+
+| `make db-check` shows `DOWN`
+| Still starting — services need ~40 s. Then `make logs S=<service>`.
+
+| Login fails for the demo accounts
+| Started without the seed profile. `make down && SPRING_PROFILES_ACTIVE=seed make up`.
+
+| `./mvnw verify` fails, no Docker
+| Testcontainers needs a Docker daemon. Use `-DskipTests` to compile only.
+
+| A gateway route 404s
+| `/internal` paths are blocked deliberately. Otherwise check the prefix is one of `/api/accounts`, `/api/catalog`, `/api/reservations`, `/api/notifications`, `/api/payments`.
+
+| 401 on a request that worked a moment ago
+| Tokens expire after 15 minutes. Log in again.
+
+| A booking 409s unexpectedly
+| Those dates are held for that car. Pick another range, or cancel the booking holding them.
+|===
