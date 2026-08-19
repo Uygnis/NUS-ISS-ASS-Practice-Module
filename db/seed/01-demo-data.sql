@@ -1,0 +1,61 @@
+-- RentEZ — demo data for local development and the presentation.
+-- rentez_startup_project_v1_1_20260810_1421SGT
+--
+-- Run with: make seed
+--
+-- WHY THIS IS NOT A FLYWAY MIGRATION
+-- Migrations are schema and live in version control forever. Seed data is
+-- throwaway demo content. Mixing them puts fake customers in the production
+-- schema history, and makes it impossible to re-run a load test against a
+-- clean database without rebuilding the schema.
+--
+-- STATUS: intentionally empty. The tables do not exist yet — no service has
+-- Flyway migrations. Uncomment and extend each block as its module lands.
+-- `make seed` succeeds against this file as-is, so the command is safe to run
+-- from day one.
+
+SELECT 'RentEZ seed: no data loaded yet — add migrations first' AS status;
+
+-- ============================================ M1 · rentez_auth (account-service)
+-- Passwords below must be real BCrypt hashes (work factor 12, per PRD §2.11).
+-- Generate one with:
+--   docker run --rm eclipse-temurin:21-jre sh -c \
+--     'echo "use org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder"'
+-- or simply register through the API once it exists and copy the stored hash.
+--
+-- INSERT IGNORE INTO rentez_auth.users
+--   (id, public_id, email, password_hash, role, status, created_at) VALUES
+--   (1, '01J0000000000000000000ADM1', 'admin@rentez.test',    '$2a$12$REPLACE_ME', 'ADMIN',    'ACTIVE', NOW(3)),
+--   (2, '01J0000000000000000000STF1', 'staff@rentez.test',    '$2a$12$REPLACE_ME', 'STAFF',    'ACTIVE', NOW(3)),
+--   (3, '01J0000000000000000000CUS1', 'customer@rentez.test', '$2a$12$REPLACE_ME', 'CUSTOMER', 'ACTIVE', NOW(3));
+
+-- =========================================== M2 · rentez_fleet (catalog-service)
+-- PRD assumption 10: approximately 200 vehicles and 50 seeded customers.
+-- Start with five for development; generate the full 200 for the load test.
+--
+-- INSERT IGNORE INTO rentez_fleet.locations
+--   (id, code, name, address, created_at) VALUES
+--   (1, 'SIN-CBD',  'Raffles Place Branch', '1 Raffles Place, Singapore',  NOW(3)),
+--   (2, 'SIN-CHGI', 'Changi Airport T3',    'Airport Boulevard, Singapore', NOW(3));
+--
+-- INSERT IGNORE INTO rentez_fleet.vehicles
+--   (id, public_id, plate_no, make, model, category_id, location_id, status, created_at) VALUES
+--   (1, '01J000000000000000000VEH1', 'SGA1234A', 'Toyota',  'Corolla Altis', 1, 1, 'AVAILABLE',   NOW(3)),
+--   (2, '01J000000000000000000VEH2', 'SGB5678B', 'Honda',   'Vezel',         2, 1, 'AVAILABLE',   NOW(3)),
+--   (3, '01J000000000000000000VEH3', 'SGC9012C', 'Hyundai', 'Avante',        1, 2, 'AVAILABLE',   NOW(3)),
+--   (4, '01J000000000000000000VEH4', 'SGD3456D', 'Toyota',  'Alphard',       3, 2, 'MAINTENANCE', NOW(3)),
+--   (5, '01J000000000000000000VEH5', 'SGE7890E', 'Mazda',   'CX-5',          2, 1, 'AVAILABLE',   NOW(3));
+--
+-- Rate plans need effective dating (PRD ADR-001). Exactly one active plan must
+-- exist per category for every date in the bookable window, or quotation fails.
+--
+-- INSERT IGNORE INTO rentez_fleet.rate_plans
+--   (id, category_id, daily_rate, currency, effective_from, effective_to, is_active) VALUES
+--   (1, 1,  85.00, 'SGD', '2026-01-01', NULL, TRUE),
+--   (2, 2, 120.00, 'SGD', '2026-01-01', NULL, TRUE),
+--   (3, 3, 190.00, 'SGD', '2026-01-01', NULL, TRUE);
+
+-- ====================================== M3 · rentez_booking (reservation-service)
+-- Leave empty. Bookings should be created through the API so that the
+-- reservation rows in vehicle_date_reservations are written by the same code
+-- path the load test exercises.

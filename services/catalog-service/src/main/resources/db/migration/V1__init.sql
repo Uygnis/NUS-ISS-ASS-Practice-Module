@@ -1,0 +1,68 @@
+-- rentez_fleet - PRD module M2, Fleet and Catalogue.
+--
+-- Ported from the monolith's `car` and `maintenance_record` tables. A faithful
+-- port: BIGINT identifiers, not the ULID public_id scheme in docs/ch02, and none
+-- of the richer fleet model (locations, categories, rate_plans, images) - those
+-- are a later migration.
+--
+-- Hibernate runs with ddl-auto=validate against this file, so column types and
+-- lengths must match the @Column declarations in domain/ exactly.
+
+CREATE TABLE car (
+    id         BIGINT       NOT NULL AUTO_INCREMENT,
+    make       VARCHAR(80)  NOT NULL,
+    model      VARCHAR(80)  NOT NULL,
+    -- NOT `year`. That is a reserved word in H2 2.x, where the DDL for this
+    -- table originally failed; it is also a MySQL keyword and a data type name.
+    -- The column has been model_year since the monolith for exactly this reason.
+    model_year INT          NOT NULL,
+    daily_rate DECIMAL(10, 2) NOT NULL,
+    location   VARCHAR(120) NOT NULL,
+    type       VARCHAR(32)  NOT NULL,
+    status     VARCHAR(32)  NOT NULL DEFAULT 'AVAILABLE',
+    PRIMARY KEY (id),
+    CONSTRAINT ck_car_type CHECK (type IN ('SEDAN', 'SUV', 'HATCHBACK', 'TRUCK', 'ELECTRIC', 'LUXURY')),
+    CONSTRAINT ck_car_status CHECK (status IN ('AVAILABLE', 'RENTED', 'MAINTENANCE', 'RETIRED'))
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
+
+-- Browsing filters on status first and then optionally location and type, which
+-- is the only read path that is not by primary key.
+CREATE INDEX ix_car_status_location_type ON car (status, location, type);
+
+-- Maintenance stays inside catalog rather than becoming its own service: it is a
+-- sub-domain of the fleet that mutates car.status directly, so splitting it would
+-- turn a local write into a distributed one for no benefit.
+--
+-- Note this FK is real and is *supposed* to be. docs/ch01 forbids foreign keys
+-- ACROSS schemas and requires them WITHIN one. car_id points at a table this
+-- service owns, so unlike Booking.customer/Booking.car in the monolith, this
+-- relationship survives the split untouched as a genuine @ManyToOne.
+CREATE TABLE maintenance_record (
+    id             BIGINT        NOT NULL AUTO_INCREMENT,
+    car_id         BIGINT        NOT NULL,
+    description    VARCHAR(500)  NOT NULL,
+    scheduled_date DATE          NOT NULL,
+    completed_date DATE          NULL,
+    status         VARCHAR(32)   NOT NULL DEFAULT 'SCHEDULED',
+    PRIMARY KEY (id),
+    CONSTRAINT fk_maintenance_car FOREIGN KEY (car_id) REFERENCES car (id),
+    CONSTRAINT ck_maintenance_status CHECK (status IN ('SCHEDULED', 'IN_PROGRESS', 'COMPLETED'))
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
+
+-- History for one car, newest first.
+CREATE INDEX ix_maintenance_car_scheduled ON maintenance_record (car_id, scheduled_date DESC);
+
+-- Each service keeps its own audit trail in its own schema - see the note in
+-- account-service's V1__init.sql.
+CREATE TABLE audit_log (
+    id          BIGINT        NOT NULL AUTO_INCREMENT,
+    actor_email VARCHAR(255)  NULL,
+    action      VARCHAR(64)   NOT NULL,
+    entity_type VARCHAR(64)   NOT NULL,
+    entity_id   BIGINT        NULL,
+    details     VARCHAR(1000) NULL,
+    occurred_at DATETIME(6)   NOT NULL,
+    PRIMARY KEY (id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
+
+CREATE INDEX ix_audit_log_occurred_at ON audit_log (occurred_at DESC);

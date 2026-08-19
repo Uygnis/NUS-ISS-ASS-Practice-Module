@@ -5,10 +5,20 @@
 services/account-service/        @sayoungestguy
 services/catalog-service/        @sayoungestguy
 services/reservation-service/    @sayoungestguy
-services/notification-service/    @sayoungestguy
+services/notification-service/   @sayoungestguy
+services/payment-service/        @sayoungestguy
 
 # Frontend
 frontend/                        @sayoungestguy
 
 # GitHub workflows
 .github/workflows/               @Uygnis
+
+# Infrastructure — previously unowned and falling through to the default.
+# These files decide how every service is built, routed and provisioned, so
+# changes to them deserve an explicit reviewer.
+docker-compose.yml               @Uygnis
+Makefile                         @Uygnis
+db/                              @Uygnis
+scripts/                         @Uygnis
+docs/                            @Uygnis
