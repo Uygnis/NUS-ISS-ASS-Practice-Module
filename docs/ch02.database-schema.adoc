@@ -1,0 +1,1201 @@
+= Chapter 2. Database Schema Reference
+:doctype: book
+:toc: left
+:toclevels: 3
+:sectnums:
+:sectnumlevels: 3
+:icons: font
+:source-highlighter: rouge
+:experimental:
+:docstamp: rentez_database_schema_v1_0_20260810_1540SGT
+:revnumber: 1.0
+:revdate: 2026-08-10 15:40 SGT
+:project: RentEZ
+:repo: NUS-ISS-ASS-Practice-Module
+
+[.lead]
+Every table the RentEZ application requires: 30 MySQL tables across five schemas
+on one instance, plus three DynamoDB tables. This is the specification the data
+modeller and each service owner build from.
+
+[IMPORTANT]
+====
+*None of these tables exist yet.* The repository contains no Flyway migrations
+and no entity classes. This chapter is the *target* schema, consolidated from
+PRD 00 §2 and §4 and the `M<n>.4 Domain entities` section of PRD 01 through 07.
+
+Where this document and a module PRD disagree, *the PRD wins* — it is the
+source, this is the digest. Report the discrepancy so both can be corrected.
+
+*Document stamp:* `{docstamp}`
+====
+
+== How to read this chapter
+
+Sections <<conventions>> and <<topology>> apply to every table and should be
+read once by everyone. Sections <<auth>> through <<dynamodb>> are per-schema
+reference — read only the one you own.
+
+[cols="2,2,2,3",options="header"]
+|===
+| Repository service | Schema | PRD module | Owner reads
+
+| `account-service`      | `rentez_auth`         | M1 Identity & Access      | <<auth>>
+| `catalog-service`      | `rentez_fleet`        | M2 Fleet & Catalogue      | <<fleet>>
+| `reservation-service`  | `rentez_booking`      | M3 Booking                | <<booking>>
+| _not yet created_      | `rentez_payment`      | M4 Payment & Refund       | <<payment>>
+| `notification-service` | `rentez_notification` | M5 Notification           | <<notification>>
+| _shared library_       | DynamoDB `rentez-audit` | M6 Audit & Compliance   | <<dynamodb>>
+| _read endpoints only_  | — no tables —         | M7 Reporting & Analytics  | <<reporting>>
+|===
+
+CAUTION: The repository service names differ from the PRD module names. The PRD
+calls them `auth-service`, `vehicle-service`, `booking-service` and
+`payment-service`. Use the mapping above. **`payment-service` does not exist in
+the repository yet** — its schema and database user are created anyway by
+`db/init/01-schemas.sql`, so the service can be added without touching database
+setup.
+
+[[topology]]
+== Topology
+
+*One MySQL 8.0 instance, five schemas.* Locally a Docker container; on AWS one
+`db.t4g.micro` RDS instance. In MySQL, `SCHEMA` and `DATABASE` are synonyms, so
+"five schemas" means five `CREATE DATABASE` statements.
+
+[cols="2,1,4",options="header"]
+|===
+| Schema | Tables | Contents
+
+| `rentez_auth`         | 6–8 | Users, roles, profiles, licences, tokens
+| `rentez_fleet`        | 9   | Locations, vehicles, images, features, rates, maintenance
+| `rentez_booking`      | 8–9 | Bookings, date reservations, handovers, extras, history
+| `rentez_payment`      | 4   | Payments, refunds, gateway log, cancellation policy
+| `rentez_notification` | 3   | Templates, notifications, preferences
+| *DynamoDB*            | 3   | Sessions, availability projection, audit trail
+| *Total*               | *30–33 MySQL + 3 DynamoDB* |
+|===
+
+The ranges are optional tables: `permissions` and `role_permissions` in
+`rentez_auth` (see <<auth>>), and `report_snapshots` in `rentez_booking` (see
+<<reporting>>). All three default to *omitted*.
+
+=== No foreign keys cross a schema boundary
+
+Within a schema, foreign keys are *mandatory* and declared with explicit
+`ON DELETE RESTRICT`. Across schemas there are *none* — a booking row stores
+`customer_id` and `vehicle_id` as plain identifiers, validated by an API call to
+the owning service at write time.
+
+This costs nothing on a single instance and buys two things: it makes the
+service boundaries real rather than decorative, and it means any one service can
+later be moved to its own database instance with no schema change at all. That
+claim is the payoff, and <<cross-schema>> lists every link it depends on.
+
+[[conventions]]
+== Conventions that apply to every table
+
+Read this section once. It is not repeated in the per-table definitions, where
+"audit columns" and "soft-delete columns" refer back here.
+
+=== Primary keys
+
+[cols="3,4",options="header"]
+|===
+| Table type | Strategy
+
+| Business entities exposed via the API +
+  (users, vehicles, bookings, payments)
+| `BIGINT UNSIGNED AUTO_INCREMENT` internal PK *plus* a
+  `public_id CHAR(26) NOT NULL UNIQUE` ULID exposed externally
+
+| Reference and lookup tables +
+  (roles, categories, extras, locations)
+| `INT UNSIGNED AUTO_INCREMENT` PK, plus a stable `code VARCHAR(32) UNIQUE`
+
+| Join tables
+| Composite PK on the two foreign keys
+|===
+
+The dual-key pattern is deliberate. A `BIGINT` PK keeps joins and index pages
+small on a `t4g.micro`, which matters when Booking is under load test. A ULID
+public identifier stops customers enumerating other people's bookings by
+incrementing a URL, and ULIDs sort chronologically, which makes them pleasant in
+logs.
+
+WARNING: *Never expose the `BIGINT` id in an API response or a URL.* It leaks
+row counts and invites enumeration.
+
+=== Standard audit columns
+
+Every business table carries all five. Reference tables carry the first two.
+
+[source,sql]
+----
+created_at   DATETIME(3)      NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+updated_at   DATETIME(3)      NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+                              ON UPDATE CURRENT_TIMESTAMP(3),
+created_by   BIGINT UNSIGNED  NULL,     -- users.id of the actor; NULL if system
+updated_by   BIGINT UNSIGNED  NULL,
+version      INT UNSIGNED     NOT NULL DEFAULT 0   -- JPA @Version
+----
+
+`version` is optimistic locking. It matters most on `bookings`, where two staff
+members editing the same reservation must not silently overwrite each other.
+
+=== Timestamps and time zone
+
+All `DATETIME` columns store *UTC*. No exceptions.
+
+[WARNING]
+====
+*Do not use MySQL `TIMESTAMP`.* It applies session time-zone conversion, so the
+same row reads differently on a developer's laptop and on RDS — silently, and
+usually discovered during a demo. Use `DATETIME(3)`.
+====
+
+`DATETIME(3)` (millisecond precision) rather than `DATETIME`, because booking
+creation ordering under concurrent load needs sub-second resolution to mean
+anything. Genuinely date-only values — a maintenance calendar day, an
+availability day — use `DATE`.
+
+The API accepts and returns ISO-8601 with an explicit offset; the React frontend
+converts to the browser's zone for display.
+
+=== Money
+
+[source,sql]
+----
+amount    DECIMAL(12,2) NOT NULL,
+currency  CHAR(3)       NOT NULL DEFAULT 'SGD'
+----
+
+[CAUTION]
+====
+*`FLOAT` and `DOUBLE` are prohibited for any monetary value.* Java-side use
+`BigDecimal` with `RoundingMode.HALF_UP`, never `double`.
+====
+
+Every table holding an amount also holds its currency, even though the MVP is
+SGD-only — adding the column later means backfilling every historical row.
+
+*Tax.* Singapore GST is *9%*. It is stored on the booking as both a rate and an
+amount:
+
+[source,sql]
+----
+tax_rate_snapshot  DECIMAL(5,2)  NOT NULL DEFAULT 9.00,
+tax_amount         DECIMAL(12,2) NOT NULL DEFAULT 0.00
+----
+
+That is not redundancy. If GST ever moves, a historical booking must still be
+able to explain its own arithmetic; an amount without its rate is a number
+nobody can reproduce. Rounding is `HALF_UP` to two decimals, applied once at the
+tax line rather than per rental day.
+
+=== Soft deletion
+
+Rows that appear in historical records are never hard-deleted. US-16 ("remove
+vehicles from the inventory") must not `DELETE` a vehicle that appears in a
+completed booking.
+
+[source,sql]
+----
+is_deleted  BOOLEAN         NOT NULL DEFAULT FALSE,
+deleted_at  DATETIME(3)     NULL,
+deleted_by  BIGINT UNSIGNED NULL
+----
+
+All read queries filter `is_deleted = FALSE`. Use a JPA `@Where` clause or a
+Hibernate filter so that no developer can forget.
+
+IMPORTANT: Unique constraints on soft-deletable tables *must include
+`is_deleted`* — otherwise a registration number can never be reused after a
+vehicle is retired. This is why `vehicles` has `UNIQUE (registration_number,
+is_deleted)` rather than `UNIQUE (registration_number)`.
+
+=== Enumerated values
+
+Status and type columns use `VARCHAR(32)` with a `CHECK` constraint, *not*
+MySQL's `ENUM` type. `ENUM` needs a DDL migration to add a value and orders
+lexically in surprising ways.
+
+Java-side, map with `@Enumerated(EnumType.STRING)` — *never* `ORDINAL`, which
+corrupts data the moment somebody reorders the enum constants.
+
+=== Correlation IDs
+
+Every inbound request is assigned an `X-Correlation-Id` at the gateway,
+propagated through every downstream call and every SQS message attribute, and
+written into every log line and audit record. Tables that record events carry a
+`correlation_id CHAR(36)`.
+
+Without it, tracing one failed booking across five services during a load test
+is guesswork.
+
+[[auth]]
+== `rentez_auth` — Identity & Access (M1)
+
+Owner: `account-service`. Six tables, plus two optional.
+
+=== `users`
+
+The identity record. Deliberately narrow, so the hot login query stays fast.
+
+[cols="3,3,4",options="header"]
+|===
+| Column | Type | Notes
+
+| `id`                    | BIGINT UNSIGNED PK | Internal
+| `public_id`             | CHAR(26) UNIQUE    | ULID, exposed externally
+| `email`                 | VARCHAR(255)       | Unique with `is_deleted`; store lowercased
+| `password_hash`         | VARCHAR(72)        | BCrypt output, work factor 12
+| `first_name`            | VARCHAR(100)       |
+| `last_name`             | VARCHAR(100)       |
+| `mobile_number`         | VARCHAR(20)        | E.164
+| `role_id`               | INT UNSIGNED FK → `roles` |
+| `status`                | VARCHAR(32)        | `PENDING_VERIFICATION`, `ACTIVE`, `SUSPENDED`, `LOCKED`, `DELETED`
+| `email_verified`        | BOOLEAN            |
+| `email_verified_at`     | DATETIME(3) NULL   |
+| `failed_login_attempts` | TINYINT UNSIGNED   | Lockout counter
+| `locked_until`          | DATETIME(3) NULL   |
+| `last_login_at`         | DATETIME(3) NULL   |
+| _soft-delete columns_   |                    | See <<conventions>>
+| _audit columns_         |                    | See <<conventions>>
+|===
+
+Indexes: `UNIQUE (email, is_deleted)`, `UNIQUE (public_id)`,
+`INDEX (role_id, status)`, `INDEX (status, created_at)`.
+
+=== `roles`
+
+`id`, `code` (`CUSTOMER` / `STAFF` / `ADMIN`, unique), `name`, `description`,
+`created_at`, `updated_at`.
+
+Role assignment is exclusive — a user holds exactly one role. `ADMIN` is a strict
+superset of `STAFF` in every requirement in the PRDs.
+
+=== `permissions` and `role_permissions` — optional, omit
+
+With exactly three fixed roles, method-level
+`@PreAuthorize("hasRole('ADMIN')")` is sufficient. These two tables cost a join
+on every authorisation check.
+
+TIP: *Recommendation: omit for the MVP* and note the extension point in the
+final report. Configurable RBAC is a good thing to have designed and a poor use
+of the remaining sprint budget.
+
+=== `customer_profiles`
+
+One-to-one with `users`, for customer-only attributes.
+
+[cols="3,3,4",options="header"]
+|===
+| Column | Type | Notes
+
+| `id`             | BIGINT UNSIGNED PK |
+| `user_id`        | BIGINT UNSIGNED UNIQUE FK → `users` |
+| `date_of_birth`  | DATE               | Drives the age ≥ 21 eligibility check
+| `address_line1`  | VARCHAR(255)       |
+| `address_line2`  | VARCHAR(255) NULL  |
+| `city`           | VARCHAR(100)       |
+| `postal_code`    | VARCHAR(20)        |
+| `country`        | CHAR(2)            | ISO 3166-1 alpha-2
+| _audit columns_  |                    |
+|===
+
+Splitting this from `users` keeps the authentication query narrow: login reads
+`users` only and never touches address data.
+
+=== `driving_licences`
+
+[cols="3,3,4",options="header"]
+|===
+| Column | Type | Notes
+
+| `id`                  | BIGINT UNSIGNED PK |
+| `user_id`             | BIGINT UNSIGNED FK → `users` |
+| `licence_number`      | VARCHAR(64)        | Encrypted at rest or masked in logs
+| `issuing_country`     | CHAR(2)            |
+| `issue_date`          | DATE               |
+| `expiry_date`         | DATE               | Checked against the booking return date
+| `licence_class`       | VARCHAR(16) NULL   |
+| `image_s3_key`        | VARCHAR(512) NULL  | Object key only, never a public URL
+| `verification_status` | VARCHAR(32)        | `PENDING`, `VERIFIED`, `REJECTED`, `EXPIRED`
+| `verified_by`         | BIGINT UNSIGNED NULL |
+| `verified_at`         | DATETIME(3) NULL   |
+| `rejection_reason`    | VARCHAR(255) NULL  |
+| _audit columns_       |                    |
+|===
+
+Indexes: `UNIQUE (user_id, licence_number)`, `INDEX (verification_status)`,
+`INDEX (expiry_date)`.
+
+Modelled as a table rather than columns on `customer_profiles` because a licence
+can be resubmitted after rejection or renewal, and that history matters when a
+dispute arises.
+
+=== `password_reset_tokens` and `email_verification_tokens`
+
+Identical shape: `id`, `user_id` FK, `token_hash` CHAR(64), `expires_at`,
+`used_at` NULL, `requested_ip` VARCHAR(45), `created_at`.
+`UNIQUE (token_hash)`, `INDEX (user_id, used_at)`.
+
+IMPORTANT: `token_hash` stores the *SHA-256 of the token*. The raw token is
+emailed and never stored, so a database leak cannot be used to reset anyone's
+password.
+
+[[fleet]]
+== `rentez_fleet` — Fleet & Vehicle Catalogue (M2)
+
+Owner: `catalog-service`. Nine tables.
+
+=== `locations`
+
+`id`, `code` VARCHAR(16) UNIQUE, `name`, `address_line1`, `address_line2`,
+`city`, `postal_code`, `country` CHAR(2), `latitude` DECIMAL(9,6), `longitude`
+DECIMAL(9,6), `phone`, `opening_time` TIME, `closing_time` TIME, `is_active`
+BOOLEAN, audit columns. Indexes `(is_active)`, `(city)`.
+
+Required by US-05, which promises search "by location" — a location must be a
+first-class entity, not free text on the vehicle row.
+
+=== `vehicle_categories`
+
+`id`, `code` VARCHAR(32) UNIQUE (`ECONOMY`, `COMPACT`, `MIDSIZE`, `SUV`,
+`LUXURY`, `VAN`), `name`, `description`, `display_order`, `is_active`, audit
+columns.
+
+=== `vehicles`
+
+[cols="3,3,4",options="header"]
+|===
+| Column | Type | Notes
+
+| `id`                    | BIGINT UNSIGNED PK |
+| `public_id`             | CHAR(26) UNIQUE    |
+| `registration_number`   | VARCHAR(16)        | Unique with `is_deleted`
+| `vin`                   | VARCHAR(17) UNIQUE | Globally unique, survives deletion
+| `make`                  | VARCHAR(64)        |
+| `model`                 | VARCHAR(64)        |
+| `model_year`            | SMALLINT UNSIGNED  |
+| `category_id`           | INT UNSIGNED FK    |
+| `transmission`          | VARCHAR(16)        | `AUTOMATIC`, `MANUAL`
+| `fuel_type`             | VARCHAR(16)        | `PETROL`, `DIESEL`, `HYBRID`, `ELECTRIC`
+| `seat_count`            | TINYINT UNSIGNED   |
+| `door_count`            | TINYINT UNSIGNED   |
+| `luggage_capacity`      | TINYINT UNSIGNED   | Large bags
+| `colour`                | VARCHAR(32)        |
+| `odometer_km`           | INT UNSIGNED       |
+| `fuel_tank_litres`      | DECIMAL(5,1) NULL  | Basis for the refuel charge
+| `current_location_id`   | INT UNSIGNED FK    |
+| `status`                | VARCHAR(32)        | `AVAILABLE`, `RENTED`, `MAINTENANCE`, `RETIRED`
+| `status_reason`         | VARCHAR(255) NULL  |
+| `daily_rate_override`   | DECIMAL(10,2) NULL | Overrides the category rate plan
+| `currency`              | CHAR(3)            |
+| `acquired_date`         | DATE NULL          |
+| _soft-delete columns_   |                    |
+| _audit columns_         |                    |
+|===
+
+Indexes: `UNIQUE (registration_number, is_deleted)`, `UNIQUE (vin)`,
+`UNIQUE (public_id)`, and *critically for search*
+`INDEX (status, current_location_id, category_id)` and
+`INDEX (category_id, daily_rate_override)`.
+
+NOTE: `daily_rate_override` lets one premium vehicle in an otherwise standard
+category be priced individually without creating a category of one. Quotation
+logic is: use the override if present, otherwise the category rate plan
+effective on the *pickup date*.
+
+=== `vehicle_images`
+
+`id`, `vehicle_id` FK, `s3_key` VARCHAR(512), `content_type`,
+`file_size_bytes`, `display_order` TINYINT, `is_primary` BOOLEAN, `alt_text`,
+`uploaded_by`, `created_at`. Index `(vehicle_id, display_order)`.
+
+Application rule: exactly one `is_primary = TRUE` per vehicle. MySQL cannot
+express this as a constraint; enforce it in the service.
+
+=== `features` and `vehicle_features`
+
+`features` — `id`, `code` UNIQUE (`GPS`, `BLUETOOTH`, `REVERSE_CAMERA`,
+`SUNROOF`, `CHILD_SEAT_ANCHOR`), `name`, `icon_name`, `display_order`.
+
+`vehicle_features` — join table, composite PK `(vehicle_id, feature_id)`.
+
+=== `rate_plans`
+
+[cols="3,3,4",options="header"]
+|===
+| Column | Type | Notes
+
+| `id`                  | BIGINT UNSIGNED PK |
+| `category_id`         | INT UNSIGNED FK    |
+| `name`                | VARCHAR(100)       | e.g. "Standard 2026", "Peak Season"
+| `base_daily_rate`     | DECIMAL(10,2)      |
+| `weekend_multiplier`  | DECIMAL(4,2) DEFAULT 1.00 | *Deferred — leave at 1.00*
+| `weekly_rate`         | DECIMAL(10,2) NULL | *Deferred — leave NULL*
+| `currency`            | CHAR(3)            |
+| `effective_from`      | DATE               |
+| `effective_to`        | DATE NULL          | NULL = open-ended
+| `is_active`           | BOOLEAN            |
+| _audit columns_       |                    |
+|===
+
+Index `(category_id, effective_from, effective_to)`.
+
+[WARNING]
+====
+Per ADR-001, `weekend_multiplier` stays at `1.00` and `weekly_rate` stays NULL
+for the MVP. The columns exist so that enabling either later is a configuration
+plus quote-calculation change rather than a migration.
+
+*Do not write code that reads them until the team decides to enable them.* A
+multiplier silently applied by half-finished logic is worse than no multiplier.
+====
+
+The non-overlap rule for effective dates must be enforced in application code —
+MySQL has no exclusion constraint. Exactly one active plan must exist per
+category for every date in the bookable window, or quotation fails.
+
+=== `maintenance_records`
+
+[cols="3,3,4",options="header"]
+|===
+| Column | Type | Notes
+
+| `id`                  | BIGINT UNSIGNED PK |
+| `public_id`           | CHAR(26) UNIQUE    |
+| `vehicle_id`          | BIGINT UNSIGNED FK |
+| `maintenance_type`    | VARCHAR(32)        | `SCHEDULED_SERVICE`, `REPAIR`, `INSPECTION`, `CLEANING`, `TYRE_CHANGE`
+| `status`              | VARCHAR(32)        | `SCHEDULED`, `IN_PROGRESS`, `COMPLETED`, `CANCELLED`
+| `scheduled_start`     | DATETIME(3)        |
+| `scheduled_end`       | DATETIME(3)        |
+| `actual_start`        | DATETIME(3) NULL   |
+| `actual_end`          | DATETIME(3) NULL   |
+| `assigned_staff_id`   | BIGINT UNSIGNED NULL | *Cross-schema, no FK*
+| `description`         | VARCHAR(500)       |
+| `completion_notes`    | TEXT NULL          |
+| `odometer_at_service` | INT UNSIGNED NULL  |
+| `cost`                | DECIMAL(10,2) NULL |
+| `currency`            | CHAR(3)            |
+| _audit columns_       |                    |
+|===
+
+Indexes `(vehicle_id, status)`, `(scheduled_start, scheduled_end)`,
+`(status, scheduled_start)`.
+
+IMPORTANT: Scheduling maintenance *also writes rows into*
+`rentez_booking.vehicle_date_reservations` (ADR-002a), via
+`POST /api/v1/bookings/internal/reservations/block`. Without that, a customer
+can book a vehicle over a maintenance window that has not started yet — the
+rentability check only catches maintenance that is already active.
+
+=== `vehicle_status_history`
+
+`id`, `vehicle_id` FK, `from_status`, `to_status`, `reason` VARCHAR(255),
+`changed_by` BIGINT, `changed_by_role` VARCHAR(16), `source` VARCHAR(32)
+(`MANUAL`, `MAINTENANCE_START`, `MAINTENANCE_COMPLETE`, `BOOKING_PICKUP`,
+`BOOKING_RETURN`), `correlation_id`, `changed_at`.
+Index `(vehicle_id, changed_at)`. *Append-only.*
+
+[[booking]]
+== `rentez_booking` — Booking (M3)
+
+Owner: `reservation-service`. Eight tables. This schema carries the most load
+and contains the concurrency guarantee the whole project is graded on.
+
+=== `bookings`
+
+The central transactional record, and the widest row in the system.
+
+[cols="3,3,4",options="header"]
+|===
+| Column | Type | Notes
+
+| `id`                      | BIGINT UNSIGNED PK |
+| `public_id`               | CHAR(26) UNIQUE    |
+| `booking_reference`       | VARCHAR(20) UNIQUE | `RZ-20260808-A7X3K`
+| `customer_id`             | BIGINT UNSIGNED    | *Cross-schema, no FK*
+| `customer_public_id`      | CHAR(26)           | Denormalised for display
+| `vehicle_id`              | BIGINT UNSIGNED    | *Cross-schema, no FK*
+| `vehicle_public_id`       | CHAR(26)           |
+| `vehicle_snapshot`        | JSON               | make, model, year, registration, category at booking time
+| `pickup_location_id`      | INT UNSIGNED       |
+| `return_location_id`      | INT UNSIGNED       |
+| `pickup_datetime`         | DATETIME(3)        | Scheduled
+| `return_datetime`         | DATETIME(3)        | Scheduled
+| `actual_pickup_datetime`  | DATETIME(3) NULL   |
+| `actual_return_datetime`  | DATETIME(3) NULL   |
+| `rental_days`             | SMALLINT UNSIGNED  |
+| `daily_rate_snapshot`     | DECIMAL(10,2)      | *Frozen at creation*
+| `rate_plan_id`            | BIGINT UNSIGNED NULL | Provenance of the rate
+| `subtotal`                | DECIMAL(12,2)      | `rental_days × daily_rate_snapshot`
+| `extras_total`            | DECIMAL(12,2) DEFAULT 0 |
+| `late_fee`                | DECIMAL(12,2) DEFAULT 0 |
+| `damage_charge`           | DECIMAL(12,2) DEFAULT 0 |
+| `refuel_charge`           | DECIMAL(12,2) DEFAULT 0 |
+| `tax_rate_snapshot`       | DECIMAL(5,2) DEFAULT 9.00 | GST rate at booking time
+| `tax_amount`              | DECIMAL(12,2) DEFAULT 0 |
+| `total_amount`            | DECIMAL(12,2)      |
+| `currency`                | CHAR(3)            |
+| `status`                  | VARCHAR(32)        | `PENDING_PAYMENT`, `CONFIRMED`, `IN_PROGRESS`, `COMPLETED`, `CANCELLED`, `NO_SHOW`
+| `cancelled_at`            | DATETIME(3) NULL   |
+| `cancelled_by`            | BIGINT UNSIGNED NULL |
+| `cancellation_reason`     | VARCHAR(255) NULL  |
+| `expires_at`              | DATETIME(3) NULL   | Payment deadline while `PENDING_PAYMENT`
+| _audit columns_           |                    | `version` matters here
+|===
+
+Indexes: `UNIQUE (booking_reference)`, `UNIQUE (public_id)`,
+`INDEX (customer_id, status, pickup_datetime DESC)` for booking history,
+`INDEX (vehicle_id, pickup_datetime, return_datetime)` for conflict checks,
+`INDEX (status, expires_at)` for the expiry sweeper,
+`INDEX (status, pickup_datetime)` for the no-show sweeper.
+
+[NOTE]
+====
+*Why `vehicle_snapshot` is JSON and not a join.* A booking must stay readable
+after a vehicle is retired and its row soft-deleted. Storing the
+display-relevant attributes at booking time means a customer's 2024 rental
+history still shows what they actually drove — without a join into a
+soft-deleted row, and without cross-schema coupling.
+
+The same reasoning drives `daily_rate_snapshot` and `tax_rate_snapshot`:
+a booking must be able to explain its own total, forever.
+====
+
+[[reservations]]
+=== `vehicle_date_reservations` — the double-booking guarantee
+
+*The single most important table in the system.* Read <<double-booking>> before
+writing any code that touches it.
+
+[cols="3,3,4",options="header"]
+|===
+| Column | Type | Notes
+
+| `vehicle_id`       | BIGINT UNSIGNED    | *Composite PK part 1*
+| `reserved_date`    | DATE               | *Composite PK part 2*
+| `reservation_type` | VARCHAR(16)        | `BOOKING`, `MAINTENANCE`, `BLOCKED`
+| `booking_id`       | BIGINT UNSIGNED NULL FK → `bookings` | Set when type = `BOOKING`
+| `maintenance_id`   | BIGINT UNSIGNED NULL | Cross-schema; set when type = `MAINTENANCE`
+| `created_at`       | DATETIME(3)        |
+|===
+
+`PRIMARY KEY (vehicle_id, reserved_date)`. Indexes `(booking_id)` and
+`(maintenance_id)` for cascade release, `(reservation_type, reserved_date)` for
+utilisation reporting.
+
+Exactly one of `booking_id` / `maintenance_id` is non-null, matching
+`reservation_type`. Enforce with a `CHECK` constraint — MySQL 8.0 honours them.
+
+One row per rental day: a booking from 10 to 12 August inserts three rows.
+Bookings are stored *inclusive of both the pickup date and the return date*
+(ADR-002), which RentEZ presents as a whole-day turnover buffer for cleaning
+and inspection between rentals.
+
+=== `booking_handovers`
+
+Pickup and return, one row each (ADR-003).
+
+[cols="3,3,4",options="header"]
+|===
+| Column | Type | Notes
+
+| `id`                    | BIGINT UNSIGNED PK |
+| `public_id`             | CHAR(26) UNIQUE    |
+| `booking_id`            | BIGINT UNSIGNED FK → `bookings` |
+| `handover_type`         | VARCHAR(16)        | `PICKUP`, `RETURN`
+| `performed_by`          | BIGINT UNSIGNED    | Staff user ID, cross-schema
+| `performed_at`          | DATETIME(3)        |
+| `location_id`           | INT UNSIGNED       | Where it physically happened
+| `odometer_km`           | INT UNSIGNED       |
+| `fuel_level_percent`    | TINYINT UNSIGNED   | 0–100
+| `exterior_condition`    | VARCHAR(16)        | `GOOD`, `MINOR_DAMAGE`, `MAJOR_DAMAGE`
+| `interior_condition`    | VARCHAR(16)        | Same values
+| `damage_reported`       | BOOLEAN DEFAULT FALSE |
+| `damage_notes`          | TEXT NULL          |
+| `licence_verified`      | BOOLEAN NULL       | Recorded at `PICKUP` only
+| `notes`                 | TEXT NULL          |
+| _audit columns_         |                    |
+|===
+
+*`UNIQUE (booking_id, handover_type)`* — this constraint does real work. It
+makes a double pickup structurally impossible rather than a state-machine check
+somebody might forget under load.
+
+Indexes `(booking_id)`, `(performed_by, performed_at)`,
+`(handover_type, performed_at)`.
+
+Pickup is *rejected* if any of these hold: the booking is not `CONFIRMED`; the
+customer's licence is not `VERIFIED`; the licence expires before the return
+date; the customer is under 21 on the pickup date; or no `CAPTURED` payment
+exists.
+
+=== `booking_handover_photos`
+
+`id`, `handover_id` FK, `s3_key` VARCHAR(512), `content_type`,
+`file_size_bytes`, `caption` VARCHAR(255) NULL, `display_order` TINYINT,
+`created_at`. Index `(handover_id, display_order)`.
+
+Damage disputes need photographic evidence, and 0..n S3 keys cannot hang off a
+column — which is the whole reason handovers are a table rather than
+`pickup_*`/`return_*` column pairs on `bookings`.
+
+=== `extras_catalogue` and `booking_extras`
+
+`extras_catalogue` — `id`, `code` UNIQUE (`GPS`, `CHILD_SEAT`,
+`ADDITIONAL_DRIVER`, `EXCESS_INSURANCE`), `name`, `description`, `unit_price`,
+`pricing_unit`, `max_quantity`, `is_active`, audit columns.
+
+`booking_extras` — `id`, `booking_id` FK, `extra_id`, `extra_code`
+(denormalised), `extra_name` (denormalised), `quantity` TINYINT, `unit_price`
+DECIMAL(10,2) *snapshotted*, `pricing_unit` (`PER_DAY` / `PER_BOOKING`),
+`line_total` DECIMAL(12,2), `created_at`.
+
+TIP: US-34 (extras) is ranked *Could*. Create both tables regardless — adding
+`booking_extras` after `bookings.total_amount` is in use is materially harder
+than leaving an empty table in the schema.
+
+=== `booking_status_history`
+
+`id`, `booking_id` FK, `from_status`, `to_status`, `changed_by` NULL,
+`changed_by_role`, `source` (`CUSTOMER`, `STAFF`, `ADMIN`, `SYSTEM_EXPIRY`,
+`SYSTEM_PAYMENT`), `reason`, `correlation_id`, `changed_at`.
+Index `(booking_id, changed_at)`. *Append-only.*
+
+=== `booking_modifications`
+
+`id`, `booking_id` FK, `modified_by`, `modification_type` (`DATE_CHANGE`,
+`LOCATION_CHANGE`, `EXTRAS_CHANGE`), `previous_values` JSON, `new_values` JSON,
+`previous_total` DECIMAL(12,2), `new_total` DECIMAL(12,2), `price_delta`
+DECIMAL(12,2), `settlement_payment_id` NULL, `settlement_refund_id` NULL,
+`status` (`PENDING_SETTLEMENT`, `APPLIED`, `REVERTED`), `reason`, `created_at`.
+Index `(booking_id, created_at)`.
+
+Modelling a modification as an entity rather than an in-place update with an
+audit row is what makes it tractable: a modification that increases the price
+must not take effect until the delta is paid, so it needs a state of its own
+while it waits.
+
+[[double-booking]]
+=== The concurrency mechanism — read this before coding
+
+The proposal names double bookings as the first problem RentEZ exists to solve,
+and `booking-service` runs at up to ten pods. *Any solution relying on
+application-level coordination is wrong by construction* — ten JVMs cannot see
+each other's locks.
+
+[cols="1,3,3",options="header"]
+|===
+| | Approach | Verdict
+
+| A
+| `SELECT` for overlapping bookings, then `INSERT` if none
+| *Rejected.* Classic time-of-check-to-time-of-use race. Two pods both read "no conflict" and both insert. Fails under exactly the load the demo generates.
+
+| B
+| `SELECT … FOR UPDATE` on the vehicle row, then overlap check, then insert
+| Correct, but serialises every booking for a vehicle behind one lock held across a cross-service quotation call. The contention shows up as latency and muddies the scaling evidence.
+
+| C
+| *Insert one row per rental day into `vehicle_date_reservations`; the composite primary key rejects any overlap*
+| *Selected.*
+|===
+
+A booking for 10–12 August inserts `(42, 2026-08-10)`, `(42, 2026-08-11)`,
+`(42, 2026-08-12)`. A concurrent booking for 11–13 August attempts
+`(42, 2026-08-11)` and receives a duplicate-key error from InnoDB. The
+transaction rolls back and the API returns `409`.
+
+Correctness is delegated to the database's unique index — the one component all
+ten pods share and the only one that is genuinely serialisable. There is no
+application-level coordination at all, which is exactly why it scales.
+
+.Implementation requirements — all seven are load-bearing
+. The reservation inserts and the `bookings` insert occur in *one transaction*. A partial failure must leave nothing behind.
+. Catch `DataIntegrityViolationException` and translate to `409 CONFLICT_VEHICLE_UNAVAILABLE`. *Do not pre-check then insert* — the pre-check is redundant and reintroduces the race.
+. Insert dates in *ascending order* in every code path — creation, modification, and maintenance blocking alike. Two transactions inserting overlapping sets in opposite orders can deadlock; a consistent order makes one simply fail on the duplicate key.
+. Cancellation, expiry and no-show delete the reservation rows in the *same transaction* as the status change. Maintenance cancellation and early completion release theirs the same way.
+. Modification deletes the old range and inserts the new range in one transaction, so a failed modification leaves the original reservation intact.
+. Set the InnoDB lock wait timeout to *5 seconds*, so a contended request fails fast rather than holding a pod thread during the load test.
+. Maintenance windows write rows here too (ADR-002a). One table, one source of truth for "is this vehicle-day taken".
+
+[TIP]
+====
+*This is the strongest technical content available for the final report.* A
+concurrency guarantee that is provably correct under horizontal scaling,
+achieved with a primary key rather than a distributed lock.
+
+Run an explicit test — 50 JMeter threads booking the same vehicle for the same
+dates — and report that exactly one succeeds.
+====
+
+[[payment]]
+== `rentez_payment` — Payment & Refund (M4)
+
+Owner: `payment-service`, *which does not exist in the repository yet*. Four
+tables.
+
+=== `payments`
+
+[cols="3,3,4",options="header"]
+|===
+| Column | Type | Notes
+
+| `id`                        | BIGINT UNSIGNED PK |
+| `public_id`                 | CHAR(26) UNIQUE    |
+| `payment_reference`         | VARCHAR(32) UNIQUE | `PY-YYYYMMDD-XXXXX`
+| `idempotency_key`           | VARCHAR(64) UNIQUE | *NOT NULL*
+| `booking_id`                | BIGINT UNSIGNED    | Cross-schema
+| `booking_reference`         | VARCHAR(20)        | Denormalised
+| `customer_id`               | BIGINT UNSIGNED    | Cross-schema
+| `payment_type`              | VARCHAR(32)        | `RENTAL`, `DEPOSIT`, `MODIFICATION_DELTA`, `PENALTY`
+| `payment_method`            | VARCHAR(32)        | `CARD`, `PAYNOW`, `MOCK`
+| `amount`                    | DECIMAL(12,2)      |
+| `currency`                  | CHAR(3)            |
+| `status`                    | VARCHAR(32)        | `INITIATED`, `AUTHORISED`, `CAPTURED`, `FAILED`, `REFUNDED`
+| `gateway_name`              | VARCHAR(64)        | `MOCK_GATEWAY`
+| `gateway_transaction_id`    | VARCHAR(128) NULL  |
+| `gateway_response_code`     | VARCHAR(32) NULL   |
+| `gateway_response_message`  | VARCHAR(255) NULL  |
+| `card_brand`                | VARCHAR(16) NULL   | `VISA`, `MASTERCARD`
+| `card_last_four`            | CHAR(4) NULL       | *The only card data stored*
+| `gateway_token`             | VARCHAR(255) NULL  | Opaque provider token
+| `refunded_amount`           | DECIMAL(12,2) DEFAULT 0 | Running total
+| `initiated_at`              | DATETIME(3)        |
+| `authorised_at`             | DATETIME(3) NULL   |
+| `captured_at`               | DATETIME(3) NULL   |
+| `failed_at`                 | DATETIME(3) NULL   |
+| `failure_reason`            | VARCHAR(255) NULL  |
+| `retry_count`               | TINYINT UNSIGNED DEFAULT 0 |
+| `correlation_id`            | CHAR(36)           |
+| _audit columns_             |                    |
+|===
+
+Indexes: `UNIQUE (idempotency_key)`, `UNIQUE (payment_reference)`,
+`INDEX (booking_id, status)`, `INDEX (customer_id, created_at DESC)`,
+`INDEX (status, initiated_at)` for the reconciliation job.
+
+[CAUTION]
+====
+*The platform never stores a PAN, CVV or expiry date.* Only a gateway token,
+the card brand, and the last four digits. This is a hard rule, not a
+preference — it is what keeps the project out of PCI scope entirely.
+
+`idempotency_key` is `NOT NULL` and unique because a retried payment request
+must never charge twice. The database enforces it; the application does not
+get a vote.
+====
+
+=== `refunds`
+
+[cols="3,3,4",options="header"]
+|===
+| Column | Type | Notes
+
+| `id`                      | BIGINT UNSIGNED PK |
+| `public_id`               | CHAR(26) UNIQUE    |
+| `refund_reference`        | VARCHAR(32) UNIQUE |
+| `payment_id`              | BIGINT UNSIGNED FK → `payments` |
+| `booking_id`              | BIGINT UNSIGNED    |
+| `booking_reference`       | VARCHAR(20)        |
+| `amount`                  | DECIMAL(12,2)      |
+| `currency`                | CHAR(3)            |
+| `refund_type`             | VARCHAR(32)        | `CANCELLATION`, `MODIFICATION`, `GOODWILL`, `DISPUTE`
+| `status`                  | VARCHAR(32)        | `REQUESTED`, `APPROVED`, `PROCESSING`, `COMPLETED`, `FAILED`
+| `policy_tier_id`          | BIGINT UNSIGNED NULL | Which tier produced the amount
+| `policy_computed_amount`  | DECIMAL(12,2) NULL | For comparison against a manual override
+| `is_manual_override`      | BOOLEAN DEFAULT FALSE |
+| `override_justification`  | VARCHAR(500) NULL  | Mandatory when overriding
+| `reason`                  | VARCHAR(255)       |
+| `requested_by`            | BIGINT UNSIGNED NULL | NULL when system-initiated
+| `approved_by`             | BIGINT UNSIGNED NULL |
+| `approved_at`             | DATETIME(3) NULL   |
+| `gateway_refund_id`       | VARCHAR(128) NULL  |
+| `completed_at`            | DATETIME(3) NULL   |
+| `failure_reason`          | VARCHAR(255) NULL  |
+| `correlation_id`          | CHAR(36)           |
+| _audit columns_           |                    |
+|===
+
+Indexes `(payment_id)`, `(booking_id)`, `(status, created_at)`.
+
+Storing `policy_tier_id` alongside the amount means a customer query six months
+later can be answered exactly, rather than recomputed against a policy that may
+since have changed.
+
+=== `payment_transactions`
+
+The gateway interaction log. `id`, `payment_id` FK NULL, `refund_id` FK NULL,
+`direction` (`REQUEST` / `RESPONSE` / `WEBHOOK`), `event_type`, `http_status`
+NULL, `gateway_reference`, `raw_payload` JSON, `signature_verified` BOOLEAN
+NULL, `correlation_id`, `occurred_at`. Index `(payment_id, occurred_at)`.
+*Append-only*, and the reason disputes are resolvable.
+
+WARNING: `raw_payload` must be scrubbed of every card field *before* insertion.
+Write that scrubbing as a single utility used by every write path, not as five
+ad-hoc redactions.
+
+=== `cancellation_policy_tiers`
+
+`id`, `policy_name`, `hours_before_pickup_from` SMALLINT UNSIGNED (inclusive),
+`hours_before_pickup_to` SMALLINT UNSIGNED NULL (exclusive; NULL = unbounded),
+`refund_percentage` DECIMAL(5,2), `fixed_fee` DECIMAL(10,2) DEFAULT 0,
+`currency`, `is_active`, `effective_from` DATE, `effective_to` DATE NULL, audit
+columns.
+
+Illustrative seed values, *to be confirmed by the team*:
+
+[cols="1,1,1,1",options="header"]
+|===
+| From (h) | To (h) | Refund % | Fee
+
+| 0  | 24   | 0.00   | 0
+| 24 | 72   | 50.00  | 0
+| 72 | NULL | 100.00 | 10.00
+|===
+
+Refund amount is `MAX(0, (total × refund_percentage / 100) − fixed_fee)`.
+
+[[notification]]
+== `rentez_notification` — Notification (M5)
+
+Owner: `notification-service`. Three tables.
+
+=== `notification_templates`
+
+`id`, `template_code` VARCHAR(64), `channel` VARCHAR(16) (`EMAIL`, `SMS`,
+`PUSH`, `IN_APP`), `locale` VARCHAR(10) default `en-SG`, `subject_template`
+VARCHAR(255) NULL, `body_template` TEXT, `version` SMALLINT, `is_active`
+BOOLEAN, `category` VARCHAR(32) (`TRANSACTIONAL`, `REMINDER`, `MARKETING`),
+audit columns. `UNIQUE (template_code, channel, locale, version)`.
+
+=== `notifications`
+
+[cols="3,3,4",options="header"]
+|===
+| Column | Type | Notes
+
+| `id`                   | BIGINT UNSIGNED PK |
+| `public_id`            | CHAR(26) UNIQUE    |
+| `event_id`             | CHAR(36)           | *UNIQUE — the idempotency guard*
+| `event_type`           | VARCHAR(64)        |
+| `recipient_user_id`    | BIGINT UNSIGNED NULL |
+| `recipient_address`    | VARCHAR(255)       | Email or phone; masked in logs
+| `channel`              | VARCHAR(16)        |
+| `template_code`        | VARCHAR(64)        |
+| `template_version`     | SMALLINT           |
+| `subject`              | VARCHAR(255) NULL  |
+| `body_rendered`        | TEXT               |
+| `related_entity_type`  | VARCHAR(32)        | `BOOKING`, `PAYMENT`, `REFUND`, `USER`
+| `related_entity_id`    | VARCHAR(64)        | Reference or public_id
+| `status`               | VARCHAR(32)        | `QUEUED`, `SENDING`, `SENT`, `DELIVERED`, `FAILED`, `BOUNCED`, `SUPPRESSED`
+| `attempt_count`        | TINYINT UNSIGNED   |
+| `last_attempt_at`      | DATETIME(3) NULL   |
+| `sent_at`              | DATETIME(3) NULL   |
+| `error_message`        | VARCHAR(500) NULL  |
+| `correlation_id`       | CHAR(36)           |
+| `created_at`           | DATETIME(3)        |
+|===
+
+Indexes: `UNIQUE (event_id)`, `INDEX (recipient_user_id, created_at DESC)`,
+`INDEX (status, last_attempt_at)`,
+`INDEX (related_entity_type, related_entity_id)`.
+
+[NOTE]
+====
+*The unique index on `event_id` is the entire de-duplication strategy.* SQS
+guarantees at-least-once delivery, so duplicate messages are certain, not
+hypothetical. Letting the database reject the duplicate is simpler and more
+reliable than any application-level cache.
+====
+
+=== `notification_preferences`
+
+`id`, `user_id`, `channel`, `category`, `opted_in` BOOLEAN, audit columns.
+`UNIQUE (user_id, channel, category)`.
+
+Absence of a row means opted in.
+
+[[dynamodb]]
+== DynamoDB — three tables
+
+Partition and sort keys are *immutable* in DynamoDB. Getting them right before
+the first write is free; changing them afterwards means creating a new table and
+migrating.
+
+=== `rentez-sessions` (M1)
+
+[cols="2,4",options="header"]
+|===
+| Attribute | Role
+
+| `jti`                     | *Partition key* — the JWT ID
+| `userPublicId`            |
+| `role`                    |
+| `issuedAt`, `expiresAt`   | Epoch seconds
+| `ttl`                     | Number, = `expiresAt`; the DynamoDB TTL attribute
+| `revoked`                 | Boolean
+| `revokedAt`               |
+| `ipAddress`, `userAgent`  |
+|===
+
+GSI `userPublicId-index` on `userPublicId` (PK) + `issuedAt` (SK), so "revoke
+all sessions for this user" is a single query rather than a table scan.
+
+The TTL attribute means expired sessions self-delete at no cost.
+
+=== `rentez-availability` (M2)
+
+[cols="2,4",options="header"]
+|===
+| Attribute | Role
+
+| `vehiclePublicId`  | *Partition key*
+| `date`             | *Sort key*, `YYYY-MM-DD`
+| `status`           | `AVAILABLE`, `BOOKED`, `MAINTENANCE`, `BLOCKED`
+| `bookingReference` | Present when `BOOKED`
+| `ttl`              | Epoch seconds, ~100 days out
+|===
+
+[WARNING]
+====
+*This table is a cache, not a source of truth.* The authoritative answer to "is
+this vehicle free on these dates" lives in
+<<reservations,`vehicle_date_reservations`>>. This projection exists purely so
+the vehicle detail calendar renders without a cross-service call on every page
+load. It is eventually consistent and *must never be used to accept a booking*.
+
+It is a textbook CQRS read model — worth stating explicitly in the final report,
+and worth defending as a deliberate choice rather than an inconsistency.
+====
+
+=== `rentez-audit` (M6)
+
+The only store for the audit trail — there is no MySQL equivalent.
+
+[cols="2,1,4",options="header"]
+|===
+| Attribute | Type | Role
+
+| `entityKey`          | String | *Partition key*, `{entityType}#{entityId}` e.g. `BOOKING#RZ-20260808-A7X3K`
+| `occurredAtEventId`  | String | *Sort key*, `{ISO-8601}#{eventId}` — unique and chronologically ordered
+| `eventId`            | String | UUID
+| `actorUserId`        | String | Public ID; `SYSTEM` for automated actions
+| `actorRole`          | String | `CUSTOMER`, `STAFF`, `ADMIN`, `SYSTEM`
+| `actorIp`            | String |
+| `serviceName`        | String | `auth-service`, `booking-service`, …
+| `action`             | String | `CREATE`, `UPDATE`, `DELETE`, `STATUS_CHANGE`, `LOGIN`, `LOGIN_FAILED`, `REFUND_APPROVED`, …
+| `entityType`         | String | `USER`, `VEHICLE`, `BOOKING`, `PAYMENT`, `REFUND`, `MAINTENANCE`
+| `entityId`           | String |
+| `outcome`            | String | `SUCCESS`, `FAILURE`, `DENIED`
+| `beforeState`        | Map    | Redacted
+| `afterState`         | Map    | Redacted
+| `correlationId`      | String |
+| `occurredAt`         | String | ISO-8601 UTC
+| `ttl`                | Number | Optional retention, e.g. two years
+|===
+
+Global secondary indexes:
+
+[cols="2,2,2,3",options="header"]
+|===
+| Index | PK | SK | Answers
+
+| `actor-index`       | `actorUserId`   | `occurredAt` | "What did this administrator do last month?"
+| `action-index`      | `action`        | `occurredAt` | "Show every refund approval this quarter"
+| `correlation-index` | `correlationId` | `occurredAt` | "Trace this booking across all services"
+|===
+
+[IMPORTANT]
+====
+*Append-only by IAM policy, not merely by convention.* The application's role
+grants `PutItem` and `Query` but *not* `UpdateItem` or `DeleteItem`.
+
+The composite sort key does the other half: including the event ID guarantees
+uniqueness even when two records share a millisecond, so `PutItem` can never
+silently overwrite an earlier record.
+====
+
+[[cross-schema]]
+== Cross-schema reference points
+
+These are the identifier links across service boundaries. *None carries a
+foreign key constraint.* Each is validated by an API call at write time.
+
+[cols="2,2,2,3",options="header"]
+|===
+| From | Column | To | Validated by
+
+| `bookings` | `customer_id` | `rentez_auth.users` | M1 eligibility endpoint
+| `bookings` | `vehicle_id` | `rentez_fleet.vehicles` | M2 rentability endpoint
+| `bookings` | `pickup_location_id`, `return_location_id` | `rentez_fleet.locations` | M2
+| `payments` | `booking_id` | `rentez_booking.bookings` | M3
+| `payments` | `customer_id` | `rentez_auth.users` | M1
+| `notifications` | `recipient_user_id` | `rentez_auth.users` | M1
+| `maintenance_records` | `assigned_staff_id` | `rentez_auth.users` | M1
+| `vehicle_date_reservations` | `vehicle_id` | `rentez_fleet.vehicles` | via `bookings`
+|===
+
+If you find yourself wanting a foreign key here, that is a signal the service
+boundary may be drawn in the wrong place — worth raising rather than working
+around.
+
+[[reporting]]
+== Reporting (M7) — no new tables
+
+Every metric derives from tables that already exist.
+
+[cols="3,4",options="header"]
+|===
+| Metric | Source
+
+| Booking volume and status mix | `bookings.status`, `bookings.created_at`
+| Revenue | `payments` where `status = CAPTURED`, minus `refunds` where `status = COMPLETED`
+| Utilisation | `vehicle_date_reservations WHERE reservation_type = 'BOOKING'` ÷ (rentable vehicles × days)
+| Vehicle downtime | `vehicle_date_reservations WHERE reservation_type = 'MAINTENANCE'`, cross-checked against `maintenance_records`
+| Cancellation and no-show rates | `bookings.status`, `booking_status_history`
+| Average duration and value | `bookings.rental_days`, `bookings.total_amount`
+|===
+
+`vehicle_date_reservations` doubles as the utilisation fact table — a pleasant
+consequence of the double-booking design rather than a coincidence. Because
+maintenance writes rows of its own, a single `GROUP BY reservation_type`
+separates vehicle-days sold from vehicle-days lost to servicing.
+
+*One optional table*, only if dashboard latency proves unacceptable:
+
+`rentez_booking.report_snapshots` — `id`, `report_code`, `period_type`
+(`DAILY` / `WEEKLY` / `MONTHLY`), `period_start` DATE, `period_end` DATE,
+`metrics` JSON, `generated_at`, `generation_duration_ms`.
+`UNIQUE (report_code, period_type, period_start)`.
+
+[CAUTION]
+====
+*Do not build this pre-emptively.* Measure first. At 200 vehicles and a few
+thousand bookings, live aggregation over indexed columns will be fast enough,
+and a snapshot table introduces staleness that then has to be explained.
+
+M7 is the only module that can damage the project without failing. A careless
+full-table aggregation running during the load test will inflate booking
+latency and contaminate the scaling evidence — the graph will show Booking
+scaling to ten pods with latency rising anyway, and nobody will know why. Index
+every report query, review the `EXPLAIN`, and give each endpoint a hard timeout.
+====
+
+== The five tables to get exactly right
+
+If the data-modelling session runs short, these are the ones that cannot be
+refactored comfortably later.
+
+[cols="1,3,5",options="header"]
+|===
+| | Table | Why
+
+| 1 | `vehicle_date_reservations` | The double-booking guarantee lives here. Everything else can be refactored; this cannot be retrofitted safely.
+| 2 | `bookings`                  | The widest transactional row, with the rate snapshot that keeps historical bookings truthful.
+| 3 | `payments`                  | The idempotency key, and the prohibition on card data.
+| 4 | `vehicles`                  | The composite index that keeps search off a full table scan.
+| 5 | `rentez-audit`              | Partition and sort keys are immutable — and currently *wrong* in the AWS Terraform. See <<gaps>>.
+|===
+
+== Migrations
+
+Flyway, running on service startup. *One migration directory per schema*, owned
+by the service that owns the schema. Files named `V<n>__<description>.sql`,
+forward-only.
+
+[source,properties]
+----
+spring.jpa.hibernate.ddl-auto=validate
+spring.flyway.enabled=true
+spring.flyway.schemas=rentez_fleet
+spring.flyway.locations=classpath:db/migration
+----
+
+[CAUTION]
+====
+*`ddl-auto=validate`, never `update`.* `validate` fails loudly when an entity
+and the migrations have drifted apart, which is the feedback you want. `update`
+silently mutates the database and hides the drift until production.
+
+*Never edit an applied migration.* The checksum check will fail on every
+teammate's laptop simultaneously. Write a new `V<n>__…sql`.
+
+*Seed data is not a migration.* Migrations are schema and live in version
+control forever; demo rows belong in `make seed`. Mixing them puts fake
+customers in your production schema history.
+====
+
+[[gaps]]
+== Known gaps between this specification and the code
+
+[cols="1,4,4",options="header"]
+|===
+| # | Gap | Action
+
+| 1
+| *No table exists.* No Flyway migrations, no entity classes, in any service.
+| This chapter is the specification to build from. Start with the five tables above.
+
+| 2
+| *No `payment-service`.* The repository has four services; M4 has none.
+| The schema and DB user already exist, so the service can be scaffolded at any time.
+
+| 3
+| *The AWS Terraform creates the DynamoDB tables with the wrong keys.* `rentez-sessions` uses `sessionId` not `jti`; `rentez-availability` uses `vehicleId`/`day` not `vehiclePublicId`/`date`; `rentez-audit` uses `actorId`/`occurredAt` not `entityKey`/`occurredAtEventId`, and is missing all three GSIs.
+| *Urgent while the tables are empty.* Keys are immutable. `scripts/init-dynamodb.sh` is already correct for local development; `aws/terraform/bootstrap/main.tf` is not.
+
+| 4
+| *The audit IAM policy grants `UpdateItem` and `DeleteItem`* on `rentez-*`, which includes `rentez-audit` and voids the append-only control M6 claims.
+| Split the statement in `aws/terraform/cluster/irsa.tf`: full CRUD on sessions and availability, `PutItem` + `Query` only on audit.
+
+| 5
+| *`weekend_multiplier` and `weekly_rate` exist but must stay unused.*
+| Leave at `1.00` and NULL. Do not write code that reads them.
+|===
+
+== Open decisions
+
+None of these block table design; all should be settled before the sprint that
+touches the module.
+
+[cols="3,2,2",options="header"]
+|===
+| Decision | Owner | Needed by
+
+| Cancellation policy tier values | Business | Phase 6
+| Security deposit — collected or not | Business | Phase 5, materially grows M4 if yes
+| `refuel_rate_per_litre` value | Business | Phase 8
+| Extras (US-34) in the MVP | Team capacity | Phase 4 — tables exist regardless
+| Handover photographs in the MVP | Team capacity | Phase 8 — tables exist regardless
+| Same-branch versus one-way return | Business | Phase 4 — columns exist regardless
+| Who may cancel on a customer's behalf | Business | Phase 6
+| `permissions` / `role_permissions` adopted | Team | Before M1 coding — recommendation is omit
+|===
+
+'''
+
+[.text-center]
+_{docstamp}_ +
+_Update this stamp and the change table on every revision._
+
+== Change table
+
+[cols="1,2,4,4",options="header"]
+|===
+| Version | Date (SGT) | Change | Rationale
+
+| v1.0
+| 2026-08-10 15:40
+| Initial consolidated schema reference: 30 MySQL tables across five schemas
+  plus three DynamoDB tables, cross-cutting column conventions, cross-schema
+  reference points, the double-booking mechanism, and five gaps between this
+  specification and the current code.
+| The schema was spread across eight PRDs with no single reference. The data
+  modeller and each service owner need one document, and the DynamoDB key
+  mismatch in the Terraform needed recording somewhere the team will see it.
+|===
