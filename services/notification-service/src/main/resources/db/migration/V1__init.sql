@@ -1,0 +1,52 @@
+-- rentez_notification - PRD module M5, Notification.
+--
+-- Ported from the monolith's `notification` table, with the one cross-boundary
+-- object reference removed: Notification held a @ManyToOne User, which is now a
+-- recipient_id plus a snapshotted address. No foreign key leaves this schema.
+
+CREATE TABLE notification (
+    id                  BIGINT        NOT NULL AUTO_INCREMENT,
+
+    -- The de-duplication key, and the reason this table can accept at-least-once
+    -- delivery safely. The producer generates it once, in the same transaction as
+    -- the business change, and the relay may deliver the same event any number of
+    -- times; this index is what makes the redelivery a no-op rather than a second
+    -- notification to the customer.
+    --
+    -- docs/ch02: "The unique index on event_id is the entire de-duplication
+    -- strategy. SQS guarantees at-least-once delivery, so duplicate messages are
+    -- certain, not hypothetical." The transport is HTTP today and the reasoning
+    -- is identical - a lost response means the sender retries.
+    event_id            CHAR(36)      NOT NULL,
+
+    -- rentez_auth.app_user.id. An identifier, never a reference.
+    recipient_id        BIGINT        NOT NULL,
+    -- Snapshot. The monolith read recipient.getEmail() off the User entity it had
+    -- eagerly loaded; asking account-service for an address on every send would be
+    -- exactly the coupling this split removes.
+    recipient_email     VARCHAR(255)  NOT NULL,
+
+    type                VARCHAR(64)   NOT NULL,
+    -- Rendered by the PRODUCER, which owns the data. In the monolith
+    -- NotificationService composed this itself by walking
+    -- booking.getCar().getMake() and payment.getBooking().getCustomer() - three
+    -- domains dereferenced to build one string.
+    message             VARCHAR(1000) NOT NULL,
+
+    related_entity_type VARCHAR(32)   NULL,
+    related_entity_id   BIGINT        NULL,
+
+    -- NOT `read`. READ is a reserved word in MySQL 8 and the DDL fails outright
+    -- with it. Same class of problem as car.model_year, which exists because
+    -- `year` is reserved in H2.
+    is_read             BOOLEAN       NOT NULL DEFAULT FALSE,
+    sent_at             DATETIME(6)   NOT NULL,
+
+    PRIMARY KEY (id),
+    CONSTRAINT uk_notification_event_id UNIQUE (event_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
+
+-- "My notifications", newest first - the read API the monolith never had.
+CREATE INDEX ix_notification_recipient_sent ON notification (recipient_id, sent_at DESC);
+-- Unread badge counts.
+CREATE INDEX ix_notification_recipient_unread ON notification (recipient_id, is_read);
