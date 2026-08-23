@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: { { .Values.catalogService.name } }
+
+spec:
+  replicas: { { .Values.catalogService.replicas } }
+
+  selector:
+    matchLabels:
+      app: { { .Values.catalogService.name } }
+
+  template:
+    metadata:
+      labels:
+        app: { { .Values.catalogService.name } }
+
+    spec:
+      containers:
+        - name: { { .Values.catalogService.name } }
+
+          image: "{{ .Values.catalogService.image.repository }}:{{ .Values.catalogService.image.tag }}"
+
+          imagePullPolicy: { { .Values.catalogService.image.pullPolicy } }
+
+          ports:
+            - containerPort: { { .Values.catalogService.containerPort } }
+
+---
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: { { .Values.catalogService.name } }
+
+spec:
+  type: { { .Values.catalogService.service.type } }
+
+  selector:
+    app: { { .Values.catalogService.name } }
+
+  ports:
+    - port: { { .Values.catalogService.service.port } }
+      targetPort: { { .Values.catalogService.containerPort } }

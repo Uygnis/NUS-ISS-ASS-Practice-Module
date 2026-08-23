@@ -1,0 +1,67 @@
+name: Simple CD Test
+
+on:
+  workflow_dispatch:
+
+# Adjust this if the chart lives somewhere other than charts/rentez in the repo.
+env:
+  HELM_CHART_PATH: charts/rentez
+  IMAGE_REPOSITORY: rentez-catalog-service
+  IMAGE_TAG: ci
+
+jobs:
+  deploy-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Show environment
+        run: |
+          echo "CD pipeline is running!"
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Branch: $GITHUB_REF_NAME"
+
+      - name: Start minikube
+        uses: medyagh/setup-minikube@latest
+        id: minikube
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.15.3
+
+      - name: Build catalog-service image directly inside Minikube
+        run: |
+          eval $(minikube -p minikube docker-env)
+          docker build -t ${IMAGE_REPOSITORY}:${IMAGE_TAG} ./services/catalog-service
+
+      - name: Load image into minikube
+        run: |
+          minikube image load ${IMAGE_REPOSITORY}:${IMAGE_TAG}
+
+      # Only catalog-service has an image built above, so account-service (and any
+      # other service already templated in the chart) is scaled to 0 replicas for
+      # this run — otherwise `helm --wait` would hang waiting on a Deployment whose
+      # image was never loaded into the cluster. Drop this --set once every
+      # service in the chart has its own build step.
+      - name: Deploy catalog-service via Helm
+        run: |
+          helm upgrade --install rentez ${HELM_CHART_PATH} \
+            --set catalogService.image.tag=${IMAGE_TAG} \
+            --set accountService.replicas=0 \
+            --wait --timeout 180s
+
+      - name: Verify rollout
+        run: |
+          kubectl rollout status deployment/catalog-service --timeout=120s
+          kubectl get pods -o wide
+          kubectl get svc
+
+      # Assumes Spring Boot Actuator's /actuator/health is exposed on catalog-service.
+      # Swap the path below if that's not enabled.
+      - name: Smoke test
+        run: |
+          kubectl run curl-test --image=curlimages/curl --restart=Never --rm -i \
+            -- curl -sf http://catalog-service:8083/actuator/health

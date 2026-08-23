@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: {{ .Values.accountService.name }}
+
+spec:
+  replicas: {{ .Values.accountService.replicas }}
+
+  selector:
+    matchLabels:
+      app: {{ .Values.accountService.name }}
+
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.accountService.name }}
+
+    spec:
+      containers:
+        - name: {{ .Values.accountService.name }}
+
+          image: "{{ .Values.accountService.image.repository }}:{{ .Values.accountService.image.tag }}"
+
+          imagePullPolicy: {{ .Values.accountService.image.pullPolicy }}
+
+          ports:
+            - containerPort: {{ .Values.accountService.containerPort }}
+
+---
+
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: {{ .Values.accountService.name }}
+
+spec:
+  type: {{ .Values.accountService.service.type }}
+
+  selector:
+    app: {{ .Values.accountService.name }}
+
+  ports:
+    - port: {{ .Values.accountService.service.port }}
+      targetPort: {{ .Values.accountService.containerPort }}

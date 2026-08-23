@@ -1,0 +1,31 @@
+accountService:
+  name: account-service
+
+  image:
+    repository: rentez-account-service
+    tag: latest
+    pullPolicy: Never
+
+  replicas: 1
+
+  containerPort: 8080
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+catalogService:
+  name: catalog-service
+
+  image:
+    repository: rentez-catalog-service
+    tag: latest
+    pullPolicy: Never
+
+  replicas: 1
+
+  containerPort: 8083
+
+  service:
+    type: ClusterIP
+    port: 8083
