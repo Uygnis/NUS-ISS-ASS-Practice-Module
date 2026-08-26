@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rentez.name" . }}
+  labels: {{- include "rentez.labels" . | nindent 4 }}
+spec:
+  # ClusterIP, not LoadBalancer. A LoadBalancer Service per microservice would
+  # create five load balancers and five bills; the shared ALB comes from the
+  # Ingresses instead. This Service exists for two things: the ALB's target
+  # registration, and service-to-service calls by DNS name.
+  type: ClusterIP
+  selector: {{- include "rentez.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

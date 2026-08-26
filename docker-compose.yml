@@ -15,11 +15,15 @@ name: rentez
 # Shared by all five Spring Boot services. Per-service values (schema, user,
 # password) are set on each service below.
 x-spring-env: &spring-env
-  DB_HOST: mysql
-  # ALWAYS 3306. This is the CONTAINER-side port — MySQL inside the container
-  # listens on 3306 no matter what host port you map it to. MYSQL_PORT in .env
-  # moves only the host side, for IntelliJ / Adminer / a mysql client on your Mac.
-  DB_PORT: "3306"
+  DB_HOST: postgres
+  # ALWAYS 5432. This is the CONTAINER-side port — Postgres inside the container
+  # listens on 5432 no matter what host port you map it to. POSTGRES_PORT in .env
+  # moves only the host side, for IntelliJ / Adminer / a psql client on your Mac.
+  DB_PORT: "5432"
+  # ONE database, five schemas. Which schema a service sees is decided by its
+  # role's search_path (db/init/01-schemas.sql), not by the connection URL, so
+  # every service points at the same DB_NAME and only DB_USER differs.
+  DB_NAME: rentez
   # DynamoDB Local speaks the real DynamoDB API, so application code uses the
   # unmodified AWS SDK. Unset on AWS, where the SDK resolves the real endpoint.
   RENTEZ_AWS_DYNAMODB_ENDPOINT: http://dynamodb:8000
@@ -32,7 +36,7 @@ x-spring-env: &spring-env
   #
   #   SPRING_PROFILES_ACTIVE=seed make up
   #
-  # The seeders are profile-gated because MySQL persists between runs, unlike the
+  # The seeders are profile-gated because Postgres persists between runs, unlike the
   # monolith's in-memory H2 - unconditional seeding would violate the email
   # unique constraint on the second boot. They are also idempotent, so re-running
   # with the profile on is safe.
@@ -50,9 +54,10 @@ x-spring-env: &spring-env
   # container limit, and five JVMs each claim ~2 GB. 70% of a 768m limit
   # leaves headroom for metaspace, threads and native buffers.
   JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=70"
-  # db.t4g.micro allows ~85 connections. Ten booking pods at the default pool
-  # of 10 would exhaust it during the load test. Keep local and AWS identical.
-  SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "5"
+  # db.t4g.micro running Postgres allows ~112 connections. Twenty-five pods at
+  # max scale-out with a pool of 5 want 125 and would exhaust it during the load
+  # test; 3 wants 75. Keep local and AWS identical.
+  SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "3"
 
 x-spring-healthcheck: &spring-healthcheck
   # Bash's /dev/tcp needs no extra packages. Once `curl` is added to the
@@ -65,7 +70,7 @@ x-spring-healthcheck: &spring-healthcheck
   start_period: 60s
 
 x-spring-depends: &spring-depends
-  mysql:
+  postgres:
     condition: service_healthy
   dynamodb-init:
     condition: service_completed_successfully
@@ -75,25 +80,31 @@ services:
   # ==================================================== INFRASTRUCTURE
   # No profile — these start with a bare `docker compose up`.
 
-  mysql:
-    image: mysql:8.0
-    command: >
-      --character-set-server=utf8mb4
-      --collation-server=utf8mb4_0900_ai_ci
-      --max-connections=200
+  postgres:
+    image: postgres:16-alpine
+    # 200 is deliberately MORE than RDS db.t4g.micro's ~112, so the local stack
+    # survives what RDS will not. That gap is a known hazard, not an oversight:
+    # a pool misconfiguration cannot reproduce locally and surfaces for the first
+    # time during the graded load test. See the architecture doc, panel C.
+    command: ["postgres", "-c", "max_connections=200"]
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rentez}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rentez}
+      # db/init/01-schemas.sql runs inside THIS database and creates the five
+      # schemas within it.
+      POSTGRES_DB: ${POSTGRES_DB:-rentez}
     ports:
-      - "${MYSQL_PORT:-3306}:3306"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - mysql-data:/var/lib/mysql
-      # MySQL runs this directory ONCE, on first boot of an empty data volume.
+      - postgres-data:/var/lib/postgresql/data
+      # Postgres runs this directory ONCE, on first boot of an empty data volume.
       # Editing 01-schemas.sql afterwards has no effect — use `make clean`.
       - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      # 127.0.0.1 rather than localhost, so this tests the TCP listener and not
-      # the unix socket, which is ready earlier.
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-rentez}"]
+      # -h 127.0.0.1 rather than the default unix socket: the socket accepts
+      # connections during initdb, while the TCP listener only opens once the
+      # server is genuinely ready for clients. Without the host flag the stack
+      # races ahead and the services fail their first connection attempt.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d ${POSTGRES_DB:-rentez}"]
       interval: 5s
       timeout: 5s
       retries: 30
@@ -132,9 +143,9 @@ services:
     ports:
       - "${ADMINER_PORT:-8090}:8080"
     environment:
-      ADMINER_DEFAULT_SERVER: mysql
+      ADMINER_DEFAULT_SERVER: postgres
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
     mem_limit: 128m
 
@@ -173,7 +184,6 @@ services:
       - "8081:8080"
     environment:
       <<: *spring-env
-      DB_NAME: rentez_auth
       DB_USER: auth_user
       DB_PASSWORD: ${AUTH_DB_PASSWORD:-auth_pw}
     depends_on: *spring-depends
@@ -189,7 +199,6 @@ services:
       - "8082:8080"
     environment:
       <<: *spring-env
-      DB_NAME: rentez_booking
       DB_USER: booking_user
       DB_PASSWORD: ${BOOKING_DB_PASSWORD:-booking_pw}
     depends_on: *spring-depends
@@ -205,7 +214,6 @@ services:
       - "8083:8080"
     environment:
       <<: *spring-env
-      DB_NAME: rentez_fleet
       DB_USER: fleet_user
       DB_PASSWORD: ${FLEET_DB_PASSWORD:-fleet_pw}
     depends_on: *spring-depends
@@ -221,7 +229,6 @@ services:
       - "8084:8080"
     environment:
       <<: *spring-env
-      DB_NAME: rentez_notification
       DB_USER: notification_user
       DB_PASSWORD: ${NOTIFICATION_DB_PASSWORD:-notification_pw}
     depends_on: *spring-depends
@@ -240,7 +247,6 @@ services:
       - "8085:8080"
     environment:
       <<: *spring-env
-      DB_NAME: rentez_payment
       DB_USER: payment_user
       DB_PASSWORD: ${PAYMENT_DB_PASSWORD:-payment_pw}
     depends_on: *spring-depends
@@ -255,8 +261,11 @@ services:
     ports:
       - "${FRONTEND_PORT:-3000}:5173"
     environment:
-      # The gateway, never a service port. Same shape as production.
-      VITE_API_BASE_URL: http://localhost:8080
+      # The API base URL is relative ("") in every environment — see the long
+      # note in frontend/vite.config.js. Inside this container the dev server
+      # proxies /api to the gateway by SERVICE NAME, because `localhost` here is
+      # the frontend container itself, not the host.
+      VITE_DEV_API_PROXY: http://gateway:80
     volumes:
       - ./frontend:/app
       # A NAMED volume, not an anonymous one. With an anonymous volume, adding a
@@ -270,7 +279,7 @@ services:
     # server.watch.usePolling in vite.config.js instead.
 
 volumes:
-  mysql-data:
+  postgres-data:
   dynamodb-data:
   frontend-node-modules:
 
