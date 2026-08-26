@@ -1,0 +1,116 @@
+name: Build images
+
+# Builds the five service images and pushes them to ECR, tagged with the commit
+# SHA. `make aws-up` then deploys a tag that already exists, so bringing the
+# environment up does not wait on five Maven builds.
+#
+# OPTIONAL, AND OFF UNLESS CONFIGURED.
+# With per-member AWS accounts there is no single account for CI to push to, so
+# this workflow does nothing until someone sets the AWS_ROLE_ARN repository
+# variable. Until then the team uses `make aws-images`, which builds locally and
+# pushes to whichever account the developer is authenticated against.
+#
+# TO ENABLE IT (once, in whichever account you nominate as the shared one):
+#   1. Create a GitHub OIDC identity provider:
+#        aws iam create-open-id-connect-provider \
+#          --url https://token.actions.githubusercontent.com \
+#          --client-id-list sts.amazonaws.com \
+#          --thumbprint-list 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+#   2. Create a role trusting this repository only, with AmazonEC2ContainerRegistryPowerUser.
+#   3. Set the AWS_ROLE_ARN and AWS_REGION repository variables.
+#
+# There are deliberately NO long-lived AWS access keys in GitHub secrets. OIDC
+# issues a short-lived credential per run, which is both safer and one less
+# thing to rotate when somebody leaves the team.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Image tag to push (defaults to the commit SHA)
+        required: false
+
+concurrency:
+  group: build-images-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # Required for OIDC. Without it the AWS credential step fails with a
+  # misleading "Not authorized to perform sts:AssumeRoleWithWebIdentity".
+  id-token: write
+
+jobs:
+  build:
+    name: ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    # Skips the whole workflow cleanly when nobody has wired up an account.
+    if: vars.AWS_ROLE_ARN != ''
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - account-service
+          - catalog-service
+          - notification-service
+          - payment-service
+          - reservation-service
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-southeast-1' }}
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      # `make aws-up` defaults TAG to `git rev-parse --short=7`, so the short
+      # form is the one that actually gets deployed. Pushing both means either
+      # works, and `TAG=<full sha>` from a CI log is never a dead end.
+      - name: Resolve tags
+        id: tags
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "short=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "long=${{ inputs.tag }}"  >> "$GITHUB_OUTPUT"
+          else
+            echo "short=$(echo '${{ github.sha }}' | cut -c1-7)" >> "$GITHUB_OUTPUT"
+            echo "long=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: services/${{ matrix.service }}
+          file: services/${{ matrix.service }}/Dockerfile
+          push: true
+          # linux/amd64 explicitly: the node group is t3/m5, which are x86. An
+          # arm64 image fails at runtime with "exec format error", which does
+          # not mention architecture and wastes an afternoon.
+          platforms: linux/amd64
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/rentez/${{ matrix.service }}:${{ steps.tags.outputs.short }}
+            ${{ steps.ecr.outputs.registry }}/rentez/${{ matrix.service }}:${{ steps.tags.outputs.long }}
+          # GitHub's own cache, so the Maven dependency layer survives between
+          # runs. Without it every build re-resolves the whole tree.
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      - name: Report the deployable tag
+        run: |
+          {
+            echo "Deploy this build with:"
+            echo '```bash'
+            echo "make aws-up TAG=${{ steps.tags.outputs.short }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

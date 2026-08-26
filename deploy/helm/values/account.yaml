@@ -1,0 +1,25 @@
+# account-service — M1 Identity & Access
+#
+# Values that differ from deploy/helm/rentez-service/values.yaml. Anything shared
+# by all five services belongs there, not here.
+
+serviceName: account-service
+
+
+database:
+  user: auth_user
+  passwordParameter: auth-db-password
+
+# account-service is the sole ISSUER of JWTs. Every other service validates them
+# locally against the same HS256 key, so nothing calls account-service on the
+# request path and it does not need to scale with booking traffic.
+
+ingress:
+  enabled: true
+  path: /api/accounts
+  order: 100
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4

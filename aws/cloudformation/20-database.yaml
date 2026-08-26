@@ -1,0 +1,117 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+# RentEZ — the EPHEMERAL database. Created by `make aws-up`, destroyed by
+# `make aws-down`.
+#
+# This is one of only two things in the whole project that cost money by the
+# hour; the other is the EKS cluster. Everything it needs in order to exist -
+# the subnet group, the parameter group, the security group, the master password
+# - lives in the PERSISTENT stack, so creating a database here is a single
+# billable resource and deleting it leaves nothing behind to clean up.
+#
+# BACKUP POLICY, AND WHY THERE IS ONLY ONE
+# DeletionPolicy is Delete, not Snapshot. That looks reckless and is deliberate:
+# `make aws-down` runs pg_dump to S3 BEFORE it touches this stack, and refuses to
+# continue if the dump fails. One backup mechanism that always runs and is
+# verified beats two that are each half-trusted. It is also cheaper (a
+# compressed dump of coursework data is a few megabytes, against ~$0.095/GB-month
+# for every retained snapshot) and more portable, since a plain SQL dump restores
+# into any Postgres 16 while a snapshot only restores into RDS.
+#
+# The reaper Lambda deletes this stack too, as its last step - see
+# 10-persistent.yaml. If the reaper fires, it means nobody ran `make aws-down`,
+# so the most recent dump is from the previous teardown. That is the cost of
+# forgetting, and it is a much smaller cost than a month of EKS.
+
+Description: >
+  RentEZ ephemeral layer: one db.t4g.micro PostgreSQL 16 instance in the
+  persistent VPC's private subnets. Roughly $0.018/hr. Destroyed by
+  `make aws-down`.
+
+Parameters:
+  DbInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+    AllowedValues: [db.t4g.micro, db.t4g.small, db.t4g.medium]
+    Description: >
+      db.t4g.micro is Free Tier eligible for the first 12 months and is what the
+      architecture doc's connection arithmetic assumes. Only raise it for the
+      load test, and if you do, say so in the report - the ~112 connection
+      ceiling is derived from this instance's memory and moves with it.
+
+  AllocatedStorageGb:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 100
+    Description: >
+      20 GB is the Free Tier allowance and far more than this dataset needs.
+      gp3 storage is billed whether or not the instance is running, which is one
+      more reason `make aws-down` destroys rather than stops.
+
+Resources:
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    # See the header. The pg_dump in `make aws-down` is the backup.
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      DBInstanceIdentifier: rentez-postgres
+      Engine: postgres
+      EngineVersion: "16"
+      DBInstanceClass: !Ref DbInstanceClass
+
+      # ONE database holding five schemas - see db/init/01-schemas.sql. The
+      # schemas and their owning roles are created by the bootstrap Job that
+      # `make aws-up` runs, because RDS has no /docker-entrypoint-initdb.d.
+      DBName: rentez
+      MasterUsername: rentez_admin
+      MasterUserPassword: "{{resolve:ssm-secure:/rentez/db/master-password}}"
+
+      AllocatedStorage: !Ref AllocatedStorageGb
+      StorageType: gp3
+      StorageEncrypted: true
+
+      # Single-AZ. Multi-AZ doubles the cost to buy a failover this environment
+      # does not need; the architecture doc is explicit that the data tier scales
+      # vertically and is not highly available at coursework scale.
+      MultiAZ: false
+
+      DBSubnetGroupName: !ImportValue rentez-db-subnet-group
+      DBParameterGroupName: !ImportValue rentez-db-parameter-group
+      VPCSecurityGroups: [!ImportValue rentez-rds-sg]
+      # Private subnets and no public IP. The only routes in are from the node
+      # security group and from a pod running inside the cluster, which is what
+      # `make aws-down` uses to take its dump.
+      PubliclyAccessible: false
+
+      # Automated backups off. They are free while the instance exists, but they
+      # also force a backup window that can stall a teardown mid-snapshot, and
+      # the dump already covers us. Explicitly zero rather than left to default.
+      BackupRetentionPeriod: 0
+      DeleteAutomatedBackups: true
+      DeletionProtection: false
+
+      # Minor versions only, and only in a window nobody is demoing in.
+      AutoMinorVersionUpgrade: true
+      PreferredMaintenanceWindow: "Sun:18:00-Sun:19:00"
+
+      # Performance Insights is free for 7 days of retention on t4g instances and
+      # is the easiest way to show connection counts and slow queries during the
+      # graded load test. Worth having on for exactly that reason.
+      EnablePerformanceInsights: true
+      PerformanceInsightsRetentionPeriod: 7
+
+      Tags:
+        - { Key: Project, Value: rentez }
+        - { Key: Layer, Value: ephemeral }
+
+Outputs:
+  DbEndpoint:
+    Description: Hostname the services connect to. Becomes DB_HOST in the Helm values.
+    Value: !GetAtt Database.Endpoint.Address
+    Export: { Name: rentez-db-endpoint }
+  DbPort:
+    Value: !GetAtt Database.Endpoint.Port
+    Export: { Name: rentez-db-port }

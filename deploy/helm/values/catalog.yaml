@@ -1,0 +1,27 @@
+# catalog-service — M2 Fleet & Catalogue
+#
+# Values that differ from deploy/helm/rentez-service/values.yaml. Anything shared
+# by all five services belongs there, not here.
+
+serviceName: catalog-service
+
+
+database:
+  user: fleet_user
+  passwordParameter: fleet-db-password
+
+# 2 to 6, more headroom than account because catalog is on the SYNCHRONOUS path
+# of every booking: reservation calls it for a quote and for rentability. The
+# architecture doc flags that call as edge 2 of a coupling cycle - if catalog is
+# slow, booking creation stalls behind it. Extra replicas are a mitigation, not
+# a fix; the fix is a circuit breaker.
+
+ingress:
+  enabled: true
+  path: /api/catalog
+  order: 101
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6

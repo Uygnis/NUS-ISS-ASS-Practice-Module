@@ -7,6 +7,9 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
 import java.time.Instant;
 import java.util.UUID;
 
@@ -39,7 +42,12 @@ public class OutboxEvent {
 	@Column(name = "event_type", nullable = false, length = 64)
 	private String eventType;
 
-	@Column(nullable = false, columnDefinition = "json")
+	// The column is JSONB. Hibernate infers varchar for a bare String field and
+	// ddl-auto=validate then rejects the mismatch, so the JDBC type is stated
+	// explicitly. The field stays a String - nothing in this service reads into
+	// the payload, it only carries it to the relay.
+	@JdbcTypeCode(SqlTypes.JSON)
+	@Column(nullable = false, columnDefinition = "jsonb")
 	private String payload;
 
 	@Column(nullable = false, length = 16)

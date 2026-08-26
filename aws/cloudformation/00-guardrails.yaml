@@ -1,0 +1,135 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+# RentEZ — spend guardrails. Deploy this FIRST, in every account, before anything
+# that can cost money.
+#
+#   aws cloudformation deploy \
+#     --stack-name rentez-guardrails \
+#     --template-file aws/cloudformation/00-guardrails.yaml \
+#     --parameter-overrides NotifyEmail=you@u.nus.edu
+#
+# Nothing here costs anything: the first two budgets per account are free, and
+# email subscribers need no SNS topic.
+#
+# WHY THIS IS A SEPARATE STACK
+# It has no dependency on anything else and must survive `make aws-nuke`. Folding
+# it into 10-persistent.yaml would mean the one thing protecting you from a
+# runaway bill gets deleted by the command you run when you are done for the
+# semester - which is exactly when a forgotten resource would quietly accrue.
+
+Description: >
+  Budget alarms and a zero-spend alarm for the RentEZ coursework account.
+  Free to run. Deploy before any other RentEZ stack.
+
+Parameters:
+  NotifyEmail:
+    Type: String
+    Description: >
+      Where budget alerts go. Use an address you actually read - a shared team
+      alias is better than one person's inbox, because the person who forgot to
+      run `make aws-down` is the least likely to notice.
+    AllowedPattern: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+    ConstraintDescription: must be a valid email address.
+
+  WarnThresholdUsd:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    Description: First warning. At roughly $0.21/hr running, $10 is about 48 hours of cluster uptime.
+
+  AlarmThresholdUsd:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    Description: >
+      Second, louder alarm. If you reach this without having run a load test,
+      something was left running - check `make aws-status` first, then the EKS
+      console for a cluster nobody remembers creating.
+
+Resources:
+
+  # ---------------------------------------------------------------- monthly cap
+  # Alerts at 50%, 80% and 100% of ACTUAL spend, plus a FORECASTED breach. The
+  # forecast notification is the one that actually saves money: it fires days
+  # before the money is spent, while there is still time to tear something down.
+  MonthlyBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: rentez-monthly
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref AlarmThresholdUsd
+          Unit: USD
+        CostFilters:
+          # Credits and refunds are excluded so the alarm tracks real consumption.
+          # A budget that reads $0 because signup credits are absorbing the cost
+          # teaches you nothing about what happens when they run out.
+          {}
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 50
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref NotifyEmail
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref NotifyEmail
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref NotifyEmail
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref NotifyEmail
+
+  # ------------------------------------------------------------ early warning
+  # A second, much lower budget. Two budgets are free per account; this is the
+  # better of the two to pay attention to, because it fires while the bill is
+  # still small enough to be a surprise rather than a problem.
+  EarlyWarningBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: rentez-early-warning
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref WarnThresholdUsd
+          Unit: USD
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref NotifyEmail
+
+Outputs:
+  NextStep:
+    Description: What to do once this stack is CREATE_COMPLETE
+    Value: !Sub >-
+      Confirm the budget emails at ${NotifyEmail}, then deploy
+      aws/cloudformation/10-persistent.yaml (or just run `make aws-bootstrap`).
+      Also enable Cost Explorer once, by hand, in the Billing console - it takes
+      24 hours to populate and cannot be turned on from CloudFormation.
