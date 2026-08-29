@@ -21,7 +21,7 @@ function App() {
   const handleLogin = async ({ email, password }) => {
     setError('')
     try {
-      const response = await fetch(`${backendUrl}/api/auth/login`, {
+      const response = await fetch(`${backendUrl}/api/accounts/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
@@ -42,7 +42,7 @@ function App() {
   const handleRegister = async ({ email, password, name, phone }) => {
     setError('')
     try {
-      const response = await fetch(`${backendUrl}/api/auth/register`, {
+      const response = await fetch(`${backendUrl}/api/accounts/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password, name, phone }),
@@ -63,7 +63,7 @@ function App() {
   const handleProfileSave = async (profile) => {
     setError('')
     try {
-      const response = await fetch(`${backendUrl}/api/auth/profile`, {
+      const response = await fetch(`${backendUrl}/api/accounts/auth/profile`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(profile),
