@@ -1,0 +1,79 @@
+name: Rentez Deploy - GITHUB CONTAINER REGISTRY
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+# Adjust this if the chart lives somewhere other than charts/rentez in the repo.
+env:
+  # HELM_CHART_PATH: charts/rentez
+  REGISTRY: ghcr.io
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Show environment
+        run: |
+          echo "CD pipeline is running!"
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Branch: $GITHUB_REF_NAME"
+
+      # - name: Set up Helm
+      #   uses: azure/setup-helm@v4
+      #   with:
+      #     version: v3.15.3
+
+      - name: Build images
+
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+
+          docker build \
+            -f ./services/catalog-service/Dockerfile.dev \
+            -t ghcr.io/${OWNER}/rentez-catalog-service:${IMAGE_TAG} \
+            ./services/catalog-service
+
+          docker build \
+            -f ./services/account-service/Dockerfile.dev \
+            -t ghcr.io/${OWNER}/rentez-account-service:${IMAGE_TAG} \
+            ./services/account-service
+
+          docker build \
+            -f ./services/notification-service/Dockerfile.dev \
+            -t ghcr.io/${OWNER}/rentez-notification-service:${IMAGE_TAG} \
+            ./services/notification-service
+
+          docker build \
+            -f ./services/reservation-service/Dockerfile.dev \
+            -t ghcr.io/${OWNER}/rentez-reservation-service:${IMAGE_TAG} \
+            ./services/reservation-service
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push images
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+
+          docker push ghcr.io/${OWNER}/rentez-catalog-service:${IMAGE_TAG}
+          docker push ghcr.io/${OWNER}/rentez-account-service:${IMAGE_TAG}
+          docker push ghcr.io/${OWNER}/rentez-notification-service:${IMAGE_TAG}
+          docker push ghcr.io/${OWNER}/rentez-reservation-service:${IMAGE_TAG}
