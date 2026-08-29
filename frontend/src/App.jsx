@@ -1,121 +1,175 @@
 import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import './App.css'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import './styles/App.css'
+import LoginPage from './pages/LoginPage.jsx'
+import RegisterPage from './pages/RegisterPage.jsx'
+import RegisteredPage from './pages/RegisteredPage.jsx'
+import HomePage from './pages/HomePage.jsx'
+import ProfilePageView from './pages/ProfilePageView.jsx'
+import NotificationsPage from './pages/NotificationsPage.jsx'
+import MyReservationsPage from './pages/MyReservationsPage.jsx'
+import NewReservationPage from './pages/NewReservationPage.jsx'
+
+const initialUser = { isAuthenticated: false, profile: null }
 
 function App() {
-  const [count, setCount] = useState(0)
+  const [user, setUser] = useState(initialUser)
+  const [error, setError] = useState('')
+  const [successMessage, setSuccessMessage] = useState('')
+  const backendUrl = import.meta.env.VITE_API_URL || 'http://localhost:8080'
+
+  const handleLogin = async ({ email, password }) => {
+    setError('')
+    try {
+      const response = await fetch(`${backendUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      })
+      const data = await response.json()
+      if (!response.ok) {
+        setError(data.message || 'Invalid credentials')
+        return false
+      }
+      setUser({ isAuthenticated: true, profile: data })
+      return true
+    } catch {
+      setError('Unable to reach authentication service.')
+      return false
+    }
+  }
+
+  const handleRegister = async ({ email, password, name, phone }) => {
+    setError('')
+    try {
+      const response = await fetch(`${backendUrl}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, name, phone }),
+      })
+      const data = await response.json()
+      if (!response.ok) {
+        setError(data.message || 'Registration failed')
+        return false
+      }
+      setSuccessMessage('Registration successful. Press OK to continue to login.')
+      return true
+    } catch {
+      setError('Unable to reach registration service.')
+      return false
+    }
+  }
+
+  const handleProfileSave = async (profile) => {
+    setError('')
+    try {
+      const response = await fetch(`${backendUrl}/api/auth/profile`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(profile),
+      })
+      const data = await response.json()
+      if (!response.ok) {
+        setError(data.message || 'Unable to save profile')
+        return false
+      }
+      setUser((current) => ({ ...current, profile: data }))
+      return true
+    } catch {
+      setError('Unable to reach profile service.')
+      return false
+    }
+  }
+
+  const handleLogout = () => {
+    setUser(initialUser)
+  }
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
-
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+    <BrowserRouter>
+      <div className="app-root">
+        <Routes>
+          <Route path="/" element={<Navigate to={user.isAuthenticated ? '/home' : '/login'} replace />} />
+          <Route
+            path="/login"
+            element={
+              user.isAuthenticated ? (
+                <Navigate to="/home" replace />
+              ) : (
+                <LoginPage onLogin={handleLogin} error={error} />
+              )
+            }
+          />
+          <Route
+            path="/register"
+            element={
+              user.isAuthenticated ? (
+                <Navigate to="/home" replace />
+              ) : (
+                <RegisterPage onRegister={handleRegister} error={error} />
+              )
+            }
+          />
+          <Route
+            path="/registered"
+            element={
+              user.isAuthenticated ? <Navigate to="/home" replace /> : <RegisteredPage message={successMessage} />
+            }
+          />
+          <Route
+            path="/home"
+            element={
+              user.isAuthenticated ? (
+                <HomePage onLogout={handleLogout} />
+              ) : (
+                <Navigate to="/login" replace />
+              )
+            }
+          />
+          <Route
+            path="/notifications"
+            element={
+              user.isAuthenticated ? (
+                <NotificationsPage onLogout={handleLogout} />
+              ) : (
+                <Navigate to="/login" replace />
+              )
+            }
+          />
+          <Route
+            path="/reservations"
+            element={
+              user.isAuthenticated ? (
+                <MyReservationsPage onLogout={handleLogout} />
+              ) : (
+                <Navigate to="/login" replace />
+              )
+            }
+          />
+          <Route
+            path="/new-reservation"
+            element={
+              user.isAuthenticated ? (
+                <NewReservationPage onLogout={handleLogout} />
+              ) : (
+                <Navigate to="/login" replace />
+              )
+            }
+          />
+          <Route
+            path="/profile"
+            element={
+              user.isAuthenticated ? (
+                <ProfilePageView profile={user.profile} onSave={handleProfileSave} error={error} onLogout={handleLogout} />
+              ) : (
+                <Navigate to="/login" replace />
+              )
+            }
+          />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </div>
+    </BrowserRouter>
   )
 }
 
