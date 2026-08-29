@@ -1,7 +1,9 @@
 name: Deploy Production
 
 on:
-  workflows: ["Rentez CI"]
+  workflow_run:
+    workflows:
+      - "Rentez CI"
     types:
       - completed
     branches:
