@@ -1,0 +1,22 @@
+name: Deploy Production
+
+on:
+  workflow_run:
+    workflows:
+      - "Rentez CI"
+    types:
+      - completed
+    branches:
+      - main
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: prod
