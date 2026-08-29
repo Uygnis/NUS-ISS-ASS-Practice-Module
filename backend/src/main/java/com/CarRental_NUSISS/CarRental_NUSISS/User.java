@@ -1,5 +1,6 @@
 package com.CarRental_NUSISS.CarRental_NUSISS;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import java.time.Instant;
 
@@ -23,7 +24,8 @@ public class User {
 	@Column(nullable = false, unique = true)
 	private String email;
 
-	/** BCrypt hash - never the raw password. */
+	/** BCrypt hash - never the raw password, and never serialized out to a client. */
+	@JsonIgnore
 	@Column(nullable = false)
 	private String passwordHash;
 
