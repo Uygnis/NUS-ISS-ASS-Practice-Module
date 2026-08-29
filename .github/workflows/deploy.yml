@@ -78,6 +78,7 @@ jobs:
         run: |
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
 
+          docker push ghcr.io/${OWNER}/rentez-frontend:${IMAGE_TAG}
           docker push ghcr.io/${OWNER}/rentez-catalog-service:${IMAGE_TAG}
           docker push ghcr.io/${OWNER}/rentez-account-service:${IMAGE_TAG}
           docker push ghcr.io/${OWNER}/rentez-notification-service:${IMAGE_TAG}
