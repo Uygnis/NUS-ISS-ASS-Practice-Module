@@ -43,6 +43,11 @@ jobs:
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
 
           docker build \
+            -f ./frontend/Dockerfile.dev \
+            -t ghcr.io/${OWNER}/rentez-frontend:${IMAGE_TAG} \
+            ./frontend
+
+          docker build \
             -f ./services/catalog-service/Dockerfile.dev \
             -t ghcr.io/${OWNER}/rentez-catalog-service:${IMAGE_TAG} \
             ./services/catalog-service
