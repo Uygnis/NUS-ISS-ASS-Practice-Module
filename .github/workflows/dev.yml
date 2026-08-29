@@ -1,7 +1,9 @@
 name: Deploy Dev
 
 on:
-  push:
+  workflows: ["Rentez CI"]
+    types:
+      - completed
     branches:
       - dev
 
