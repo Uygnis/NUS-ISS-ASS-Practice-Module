@@ -11,13 +11,22 @@ on:
 
   workflow_dispatch:
 
+# id-token, not packages. Nothing here touches GitHub Container Registry any
+# more; deploy.yml authenticates to AWS by OIDC, and PERMISSIONS DO NOT INHERIT
+# INTO A CALLED WORKFLOW — they have to be granted here, at the caller. Without
+# id-token the credential step fails with "Not authorized to perform
+# sts:AssumeRoleWithWebIdentity", which sounds like a broken trust policy.
 permissions:
   contents: read
-  packages: write
+  id-token: write
 
 jobs:
   deploy:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    # A workflow_dispatch has no workflow_run to inspect, so `conclusion` is
+    # empty and the bare check would silently skip every manual run.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     uses: ./.github/workflows/deploy.yml
     with:
       environment: dev

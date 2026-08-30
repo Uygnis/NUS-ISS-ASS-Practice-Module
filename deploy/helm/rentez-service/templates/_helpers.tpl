@@ -26,5 +26,5 @@ CI built. Failing loudly here beats deploying whatever `:latest` happens to be.
 {{- define "rentez.image" -}}
 {{- $registry := required "image.registry must be set (make aws-up injects it)" .Values.image.registry -}}
 {{- $tag := required "image.tag must be set - never deploy a floating tag" .Values.image.tag -}}
-{{- printf "%s/rentez/%s:%s" $registry (include "rentez.name" .) $tag -}}
+{{- printf "%s/rentez-%s:%s" $registry (include "rentez.name" .) $tag -}}
 {{- end -}}

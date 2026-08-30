@@ -64,7 +64,7 @@ fi
 # 4. Does that tag exist? Refuse to guess: deploying a tag that was never built
 #    fails minutes later with ImagePullBackOff, after four of the five releases
 #    have already been rolled.
-if ! aws ecr describe-images --repository-name rentez/account-service \
+if ! aws ecr describe-images --repository-name rentez-account-service \
 		--image-ids "imageTag=$TAG" >/dev/null 2>&1; then
 	die "no image tagged '$TAG' in ECR. Push one first (merge to main, or 'make aws-images'), or pass TAG=<sha>."
 fi

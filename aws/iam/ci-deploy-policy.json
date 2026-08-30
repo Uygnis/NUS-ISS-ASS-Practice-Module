@@ -85,11 +85,17 @@
       "Resource": "*"
     },
     {
-      "Sid": "VerifyTheImageTagExists",
+      "Sid": "BuildAndVerifyImages",
       "Effect": "Allow",
       "Action": [
+        "ecr:GetAuthorizationToken",
         "ecr:DescribeImages",
-        "ecr:GetAuthorizationToken"
+        "ecr:BatchGetImage",
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:InitiateLayerUpload",
+        "ecr:UploadLayerPart",
+        "ecr:CompleteLayerUpload",
+        "ecr:PutImage"
       ],
       "Resource": "*"
     },

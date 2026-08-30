@@ -5,10 +5,14 @@ on:
     branches:
       - main
       - dev
+      # feature/** restored. Dropping it stopped feature branches being tested
+      # at all, which is exactly when the feedback is worth most.
+      - "feature/**"
   pull_request:
     branches:
       - main
       - dev
+      - "feature/**"
 
 concurrency:
   group: ci-${{ github.ref }}

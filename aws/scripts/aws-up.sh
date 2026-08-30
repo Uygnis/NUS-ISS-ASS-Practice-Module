@@ -44,7 +44,7 @@ if [ -z "$TAG" ]; then
 	TAG="$(git -C "$REPO_ROOT" rev-parse --short=7 HEAD)"
 	say "no TAG given, using the current commit: $TAG"
 fi
-if ! aws ecr describe-images --repository-name rentez/account-service \
+if ! aws ecr describe-images --repository-name rentez-account-service \
 		--image-ids "imageTag=$TAG" >/dev/null 2>&1; then
 	die "no image tagged '$TAG' in ECR. Push one first (merge to main, or 'make aws-images'), or pass TAG=<sha>."
 fi

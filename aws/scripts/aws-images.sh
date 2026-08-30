@@ -40,10 +40,10 @@ for svc in "${SERVICES[@]}"; do
 		--provenance=false \
 		--platform linux/amd64 \
 		--file "$REPO_ROOT/services/$svc/Dockerfile" \
-		--tag "$REGISTRY/rentez/$svc:$TAG" \
+		--tag "$REGISTRY/rentez-$svc:$TAG" \
 		"$REPO_ROOT/services/$svc"
-	docker push "$REGISTRY/rentez/$svc:$TAG"
-	ok "pushed rentez/$svc:$TAG"
+	docker push "$REGISTRY/rentez-$svc:$TAG"
+	ok "pushed rentez-$svc:$TAG"
 done
 
 step "Done"

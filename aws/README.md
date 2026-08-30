@@ -152,39 +152,69 @@ five images and then deploys them automatically; see below.
 
 ## Continuous deployment (shared account only)
 
-Two workflows, chained:
+Four workflows. `ci.yml` tests, and on success one of the two branch workflows
+calls the shared `deploy.yml`:
 
-| Workflow | Does | Needs |
-|---|---|---|
-| `build-images.yml` | Builds the five images, pushes to ECR tagged with the SHA | `AWS_ROLE_ARN` |
-| `deploy.yml` | Runs `make aws-deploy` with that SHA | `AWS_DEPLOY_ROLE_ARN` |
+```
+Rentez CI ──success──> Deploy Dev  (dev)  ─┐
+                                            ├─> Rentez Deploy ─> ECR ─> EKS
+          ──success──> Deploy Production ──┘        (deploy.yml)
+                       (main)
+```
 
-Both are dormant until their repository variable is set, so per-member accounts
-are unaffected by any of this.
+`deploy.yml` builds the five service images to ECR and then runs
+`make aws-deploy`. It is dormant until `AWS_DEPLOY_ROLE_ARN` is set, so
+per-member accounts are unaffected by any of this.
 
 The daily loop on the shared account becomes: someone runs `make aws-up` once in
-the morning, and from then on **merging to main deploys**. Nobody needs AWS
+the morning, and from then on **merging deploys**. Nobody else needs AWS
 credentials to ship.
+
+**Both branches deploy to the same cluster.** There is one environment, not a
+dev and a prod, so the most recent deploy is what is live regardless of which
+branch produced it. Each run's step summary names its branch, which is the only
+way to work out who overwrote whom.
+
+### Why OIDC and not `GITHUB_TOKEN`
+
+An earlier version of `deploy.yml` pushed images to GitHub Container Registry.
+That proved the artifact publishing worked and was then dropped: EKS pulls from
+ECR using the node instance profile, so there is **no registry credential in the
+cluster at all**. GHCR would have needed one.
+
+With GHCR gone, every leg of the pipeline talks to AWS:
+
+| Leg | Credential |
+|---|---|
+| Push image → ECR | OIDC role |
+| Deploy → EKS | OIDC role, plus an EKS access entry (step 4 below) |
+| EKS pull ← ECR | node instance profile — nothing to configure |
+
+`GITHUB_TOKEN` is a GitHub credential; AWS will not accept it under any
+configuration. So it has no role here, and `packages: write` is gone from all
+three workflows. The genuine alternative to OIDC is a long-lived AWS access key
+pair in GitHub secrets, and it loses on every axis: it never expires, it sits in
+a secret store indefinitely, it must be rotated by hand, and it has to be
+revoked when a teammate leaves. OIDC mints a fresh credential per run and there
+is nothing to leak.
 
 ### One-time setup
 
 1. **OIDC provider** — the commands are in the header of
-   `.github/workflows/build-images.yml`.
+   `.github/workflows/deploy.yml`.
 
-2. **Two roles**, both trusting only this repository through that provider:
+2. **One role**, trusting only this repository through that provider, with the
+   policy in `aws/iam/ci-deploy-policy.json`:
 
-   - a *build* role with `AmazonEC2ContainerRegistryPowerUser`
-   - a *deploy* role with `aws/iam/ci-deploy-policy.json`:
+   ```bash
+   aws iam put-role-policy --role-name rentez-ci-deploy \
+     --policy-name rentez-deploy \
+     --policy-document file://aws/iam/ci-deploy-policy.json
+   ```
 
-     ```bash
-     aws iam put-role-policy --role-name rentez-ci-deploy \
-       --policy-name rentez-deploy \
-       --policy-document file://aws/iam/ci-deploy-policy.json
-     ```
-
-   Two roles rather than one because pushing an image and rolling a live cluster
-   are very different amounts of authority, and only the deploy role is
-   cluster-admin.
+   Both jobs assume it. Be aware that it is cluster-admin on EKS — which is why
+   the policy is scoped statement by statement rather than reaching for
+   `AdministratorAccess`.
 
 3. **Repository variables** (Settings → Secrets and variables → Actions →
    Variables — *variables*, not secrets; none of these are sensitive, and there
@@ -192,14 +222,14 @@ credentials to ship.
 
    | Variable | Value |
    |---|---|
-   | `AWS_ROLE_ARN` | the build role |
-   | `AWS_DEPLOY_ROLE_ARN` | the deploy role |
+   | `AWS_DEPLOY_ROLE_ARN` | the role from step 2 |
    | `AWS_REGION` | `ap-southeast-1` |
 
-4. **Give the deploy role access to the cluster.** IAM permission is not enough:
-   `eksctl` makes only the creating principal a cluster admin, so the pipeline
-   needs an EKS *access entry* as well. `make aws-up` creates one when told the
-   role ARN, and must be told every time, because the cluster is ephemeral:
+4. **Give the role access to the cluster.** IAM permission is not cluster
+   permission: `eksctl` makes only the creating principal a cluster admin, so
+   the pipeline needs an EKS *access entry* as well. `make aws-up` creates one
+   when told the role ARN, and must be told every time, because the cluster is
+   ephemeral:
 
    ```bash
    export CI_ROLE_ARN=arn:aws:iam::<account>:role/rentez-ci-deploy
@@ -207,7 +237,7 @@ credentials to ship.
    ```
 
    Put that `export` in the shared account's shell profile and forget about it.
-   Skip this and deploys fail with `You must be logged in to the server
+   Skip it and deploys fail with `You must be logged in to the server
    (Unauthorized)`, which mentions neither IAM nor the missing access entry.
 
 ### A red Deploy run is often correct
@@ -321,11 +351,10 @@ commands work.
 
 If all four of you run `make aws-up` at once, you are paying four control planes.
 
-`.github/workflows/build-images.yml` and `deploy.yml` are the pieces that assume
-a single account. Both stay dormant until their repository variable is set
-(`AWS_ROLE_ARN` and `AWS_DEPLOY_ROLE_ARN` — see *Continuous deployment* above);
-until then use `make aws-images` to build and `make aws-deploy` to deploy, both
-of which run against whichever account you are authenticated to.
+`.github/workflows/deploy.yml` is the one piece that assumes a single account.
+It stays dormant until `AWS_DEPLOY_ROLE_ARN` is set (see *Continuous deployment*
+above); until then use `make aws-images` to build and `make aws-deploy` to
+deploy, both of which run against whichever account you are authenticated to.
 
 ---
 
