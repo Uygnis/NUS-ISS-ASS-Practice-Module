@@ -106,8 +106,14 @@ fi
 if cluster_exists && command -v kubectl >/dev/null 2>&1; then
 	if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
 		printf "\n"
+		# $7 and $4, NOT $6 and $3. kubectl prints the TARGETS column as
+		# "cpu: 4%/60%" - with a space - so awk splits it into TWO fields and
+		# everything after it shifts right by one. Using $6/$3 reads MAXPODS as
+		# the replica count and the literal string "cpu:" as the utilisation,
+		# which makes a healthy environment look pinned at max with no metrics.
+		#   $1 name  $2 ref  $3 "cpu:"  $4 4%/60%  $5 min  $6 max  $7 replicas
 		kubectl get hpa -n "$NAMESPACE" --no-headers 2>/dev/null \
-			| awk '{printf "  %-22s %s replicas, cpu %s\n", $1, $6, $3}' || true
+			| awk '{printf "  %-22s %s replicas, cpu %s\n", $1, $7, $4}' || true
 		# <unknown> in the cpu column means metrics-server is not working, which
 		# is the single most common reason "the HPA does nothing".
 	fi
