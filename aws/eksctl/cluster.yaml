@@ -34,6 +34,17 @@ metadata:
     Project: rentez
     Layer: ephemeral
     ManagedBy: eksctl
+    # Set from `caller_name` by make aws-up. On a shared account this is what
+    # makes "whose cluster is this" answerable without asking around.
+    Owner: "${OWNER}"
+
+# Explicit rather than inherited. `make aws-up` grants the CI deploy role access
+# with `eksctl create accessentry`, and access entries are simply ignored in
+# CONFIG_MAP mode — the command succeeds, the role still gets Unauthorized, and
+# nothing anywhere says why. CONFIG_MAP is kept alongside API because eksctl
+# still writes the node group's own identity into the aws-auth ConfigMap.
+accessConfig:
+  authenticationMode: API_AND_CONFIG_MAP
 
 # Reuse the VPC from the persistent stack rather than letting eksctl create one.
 # Two reasons, and the second is the expensive one:
@@ -153,6 +164,7 @@ managedNodeGroups:
       k8s.io/cluster-autoscaler/enabled: "true"
       k8s.io/cluster-autoscaler/rentez: "owned"
       Project: rentez
+      Owner: "${OWNER}"
     iam:
       withAddonPolicies:
         # Pull images from ECR.

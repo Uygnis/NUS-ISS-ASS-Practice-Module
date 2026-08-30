@@ -20,13 +20,12 @@ require_tools aws eksctl kubectl helm python3
 require_credentials
 require_persistent_stack
 
-REGISTRY="$(stack_output "$PERSISTENT_STACK" EcrRegistry)"
+# Only what the INFRASTRUCTURE half needs. The registry, the ALB security group,
+# the frontend bucket and the distribution are read by aws-deploy.sh instead,
+# out of the same stack — so neither script depends on the other's variables.
 VPC_ID="$(stack_output "$PERSISTENT_STACK" VpcId)"
-ALB_SG="$(stack_output "$PERSISTENT_STACK" AlbSecurityGroupId)"
 RDS_SG="$(stack_output "$PERSISTENT_STACK" RdsSecurityGroupId)"
 APP_URL="$(stack_output "$PERSISTENT_STACK" AppUrl)"
-FRONTEND_BUCKET="$(stack_output "$PERSISTENT_STACK" FrontendBucketName)"
-DISTRIBUTION_ID="$(stack_output "$PERSISTENT_STACK" DistributionId)"
 
 # Assigned to a plain variable FIRST, deliberately. stack_output aborts with
 # `die` on a missing output, but inside a herestring that exit only kills the
@@ -62,9 +61,23 @@ fi
 INITIAL_DEADLINE="$(arm_reaper "$TTL_HOURS")"
 say "lease armed until $INITIAL_DEADLINE — even if this run fails, nothing is left running forever"
 
+# Who is bringing this up. Only matters on a shared account, where `aws-status`
+# needs to say whose window is running out and `aws-down` needs to warn before
+# deleting somebody else's cluster. OWNER also tags the ephemeral resources so
+# Cost Explorer can attribute spend per person.
+OWNER="$(caller_name)"
+export OWNER
+PREVIOUS_HOLDER="$(holder_name)"
+if [ "$PREVIOUS_HOLDER" != "none" ] && [ "$PREVIOUS_HOLDER" != "$OWNER" ]; then
+	warn "$PREVIOUS_HOLDER already has this environment (since $(holder_since))"
+	warn "continuing will extend the lease and deploy over their work"
+fi
+hold_env
+say "held by $OWNER"
+
 # ---------------------------------------------------------------- 1. database
 # First, because it takes ~8 minutes and can create while the cluster does.
-step "1/6  Database"
+step "1/5  Database"
 if stack_exists "$DATABASE_STACK"; then
 	ok "$DATABASE_STACK already exists"
 else
@@ -72,12 +85,13 @@ else
 	aws cloudformation deploy \
 		--stack-name "$DATABASE_STACK" \
 		--template-file "$REPO_ROOT/aws/cloudformation/20-database.yaml" \
+		--parameter-overrides "Owner=$OWNER" \
 		--no-fail-on-empty-changeset >/dev/null &
 	DB_PID=$!
 fi
 
 # ----------------------------------------------------------------- 2. cluster
-step "2/6  EKS cluster"
+step "2/5  EKS cluster"
 if cluster_exists; then
 	ok "cluster '$CLUSTER_NAME' already exists"
 	aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION" >/dev/null
@@ -87,6 +101,31 @@ else
 	# differ per account.
 	envsubst < "$REPO_ROOT/aws/eksctl/cluster.yaml" > /tmp/rentez-cluster.yaml
 	eksctl create cluster -f /tmp/rentez-cluster.yaml
+fi
+
+# LET THE PIPELINE IN.
+#
+# `eksctl create cluster` makes the CREATING principal a cluster admin and
+# nobody else. A GitHub Actions role therefore authenticates to AWS perfectly
+# and is then refused by the API server with
+#
+#     error: You must be logged in to the server (Unauthorized)
+#
+# which names neither IAM nor the cluster, and sends people looking at the OIDC
+# trust policy for an afternoon. One access entry fixes it, and it has to be
+# re-created with every cluster because the cluster is ephemeral.
+#
+# Conditional on CI_ROLE_ARN so that per-member accounts, which have no pipeline
+# pointed at them, are unaffected.
+if [ -n "${CI_ROLE_ARN:-}" ]; then
+	if eksctl create accessentry --cluster "$CLUSTER_NAME" --region "$AWS_REGION" \
+			--principal-arn "$CI_ROLE_ARN" \
+			--access-policy "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy,accessScope={type=cluster}" \
+			>/dev/null 2>&1; then
+		ok "granted cluster access to the CI role"
+	else
+		ok "CI role already has cluster access"
+	fi
 fi
 
 # Wait for the database only now — by this point it has almost certainly
@@ -109,7 +148,7 @@ aws ec2 authorize-security-group-ingress --group-id "$RDS_SG" \
 	|| ok "5432 already open from the cluster to RDS"
 
 # --------------------------------------------------------------- 3. add-ons
-step "3/6  Cluster add-ons"
+step "3/5  Cluster add-ons"
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
 helm repo add eks https://aws.github.io/eks-charts >/dev/null 2>&1 || true
@@ -199,7 +238,7 @@ helm upgrade --install cluster-autoscaler autoscaler/cluster-autoscaler \
 ok "cluster-autoscaler"
 
 # ------------------------------------------------------- 4. schema + restore
-step "4/6  Database bootstrap"
+step "4/5  Database bootstrap"
 
 # Config every service reads.
 kubectl create configmap rentez-config --namespace "$NAMESPACE" \
@@ -284,58 +323,17 @@ else
 	ok "no dump to restore — Flyway and the seed profile will build a fresh database"
 fi
 
-# ---------------------------------------------------------------- 5. deploy
-step "5/6  Services"
-kubectl apply -f "$REPO_ROOT/deploy/k8s/00-internal-deny.yaml" >/dev/null
-ok "internal-path deny rule"
-
-for svc in "${SERVICES[@]}"; do
-	helm upgrade --install "$svc" "$REPO_ROOT/deploy/helm/rentez-service" \
-		--namespace "$NAMESPACE" \
-		--values "$REPO_ROOT/deploy/helm/values/${svc%-service}.yaml" \
-		--set "image.registry=$REGISTRY" \
-		--set "image.tag=$TAG" \
-		--set "ingress.albSecurityGroup=$ALB_SG" \
-		--wait --timeout 5m >/dev/null
-	ok "$svc"
-done
-
-# ------------------------------------------------------------- 6. edge + lease
-step "6/6  Frontend and edge"
-
-say "building and uploading the frontend"
-( cd "$REPO_ROOT/frontend" && npm ci --silent && npm run build --silent )
-aws s3 sync "$REPO_ROOT/frontend/dist" "s3://$FRONTEND_BUCKET" --delete >/dev/null
-ok "uploaded to $FRONTEND_BUCKET"
-
-say "waiting for the ALB address"
-ALB_DNS=""
-for _ in $(seq 1 60); do
-	ALB_DNS="$(kubectl get ingress -n "$NAMESPACE" account-service \
-		-o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)"
-	[ -n "$ALB_DNS" ] && break
-	sleep 10
-done
-[ -n "$ALB_DNS" ] || die "the ALB never got an address. Check: kubectl -n kube-system logs deploy/aws-load-balancer-controller"
-ok "ALB $ALB_DNS"
-
-# Point CloudFront's /api/* behaviour at this ALB. The distribution itself lives
-# in the persistent stack so the team's URL never changes; only its origin moves.
-say "repointing CloudFront at the new ALB (takes a few minutes to propagate)"
-aws cloudformation deploy \
-	--stack-name "$PERSISTENT_STACK" \
-	--template-file "$REPO_ROOT/aws/cloudformation/10-persistent.yaml" \
-	--capabilities CAPABILITY_IAM \
-	--parameter-overrides "AlbDnsName=$ALB_DNS" "ClusterName=$CLUSTER_NAME" \
-		"CloudFrontPrefixListId=$(aws ec2 describe-managed-prefix-lists \
-			--filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing \
-			--query 'PrefixLists[0].PrefixListId' --output text)" \
-	--no-fail-on-empty-changeset >/dev/null
-aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" --paths '/*' >/dev/null
-ok "CloudFront updated"
+# ------------------------------------------------------- 5. the application
+# Everything from here down is code rather than infrastructure, so it lives in
+# its own script: a redeploy does not have to start from the top of this one,
+# and CI runs the very same file on every merge to main.
+step "5/5  Application"
+SUMMARY=0 TAG="$TAG" "$(dirname "${BASH_SOURCE[0]}")/aws-deploy.sh"
 
 # Re-arm, so the full TTL is measured from a WORKING environment rather than
-# from whenever this run happened to start.
+# from whenever this run happened to start. Deliberately here and not in
+# aws-deploy.sh: bringing an environment up sets the lease, deploying to one
+# must never extend it.
 DEADLINE="$(arm_reaper "$TTL_HOURS")"
 
 step "Up"
@@ -343,11 +341,12 @@ cat <<EOF
 
   URL        $APP_URL
   Image tag  $TAG
+  Held by    $OWNER
   Expires    $DEADLINE  (in ${TTL_HOURS}h)
 
   The reaper will tear this down automatically at that time. To finish early
   and take a backup:            make aws-down
-  To extend the lease:          make aws-up TTL_HOURS=8
+  To extend the lease:          make aws-extend HOURS=4
 
   Costing roughly \$0.21/hour from now.
 

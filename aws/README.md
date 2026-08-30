@@ -129,6 +129,95 @@ make aws-up RESTORE=0        # start from an empty database
 make aws-down KEEP_DB=1      # keep RDS running (~$13/month) for tomorrow
 ```
 
+### Redeploying without rebuilding the environment
+
+`make aws-up` is two things bolted together: it *provisions* (database, cluster,
+add-ons, schema) and then it *deploys* (five Helm releases, the frontend bundle,
+the CloudFront origin). Only the second half changes when the code changes, and
+it is available on its own:
+
+```bash
+make aws-deploy              # ~3 min, deploys the current commit
+make aws-deploy TAG=abc1234  # ~3 min, deploys a specific tag
+```
+
+It refuses to run if there is no cluster — it will not resurrect a
+$0.21/hour environment for you — and it never touches the lease, so redeploying
+does not buy you more time.
+
+On the shared account this is what the pipeline runs. Merging to main builds the
+five images and then deploys them automatically; see below.
+
+---
+
+## Continuous deployment (shared account only)
+
+Two workflows, chained:
+
+| Workflow | Does | Needs |
+|---|---|---|
+| `build-images.yml` | Builds the five images, pushes to ECR tagged with the SHA | `AWS_ROLE_ARN` |
+| `deploy.yml` | Runs `make aws-deploy` with that SHA | `AWS_DEPLOY_ROLE_ARN` |
+
+Both are dormant until their repository variable is set, so per-member accounts
+are unaffected by any of this.
+
+The daily loop on the shared account becomes: someone runs `make aws-up` once in
+the morning, and from then on **merging to main deploys**. Nobody needs AWS
+credentials to ship.
+
+### One-time setup
+
+1. **OIDC provider** — the commands are in the header of
+   `.github/workflows/build-images.yml`.
+
+2. **Two roles**, both trusting only this repository through that provider:
+
+   - a *build* role with `AmazonEC2ContainerRegistryPowerUser`
+   - a *deploy* role with `aws/iam/ci-deploy-policy.json`:
+
+     ```bash
+     aws iam put-role-policy --role-name rentez-ci-deploy \
+       --policy-name rentez-deploy \
+       --policy-document file://aws/iam/ci-deploy-policy.json
+     ```
+
+   Two roles rather than one because pushing an image and rolling a live cluster
+   are very different amounts of authority, and only the deploy role is
+   cluster-admin.
+
+3. **Repository variables** (Settings → Secrets and variables → Actions →
+   Variables — *variables*, not secrets; none of these are sensitive, and there
+   are deliberately no long-lived AWS keys anywhere):
+
+   | Variable | Value |
+   |---|---|
+   | `AWS_ROLE_ARN` | the build role |
+   | `AWS_DEPLOY_ROLE_ARN` | the deploy role |
+   | `AWS_REGION` | `ap-southeast-1` |
+
+4. **Give the deploy role access to the cluster.** IAM permission is not enough:
+   `eksctl` makes only the creating principal a cluster admin, so the pipeline
+   needs an EKS *access entry* as well. `make aws-up` creates one when told the
+   role ARN, and must be told every time, because the cluster is ephemeral:
+
+   ```bash
+   export CI_ROLE_ARN=arn:aws:iam::<account>:role/rentez-ci-deploy
+   make aws-up
+   ```
+
+   Put that `export` in the shared account's shell profile and forget about it.
+   Skip this and deploys fail with `You must be logged in to the server
+   (Unauthorized)`, which mentions neither IAM nor the missing access entry.
+
+### A red Deploy run is often correct
+
+The environment holds a four-hour lease and the reaper tears it down when it
+expires, so most merges outside a working session land with nothing to deploy
+to. The run fails in about thirty seconds with `no cluster 'rentez' — someone
+has to run 'make aws-up' first`. That is the honest answer, not a broken
+pipeline. Bring the environment up and re-run the workflow.
+
 ---
 
 ## Why it cannot quietly bill you for a month
@@ -232,14 +321,26 @@ commands work.
 
 If all four of you run `make aws-up` at once, you are paying four control planes.
 
-`.github/workflows/build-images.yml` is the one piece that assumes a single
-account. It stays dormant until someone sets the `AWS_ROLE_ARN` repository
-variable; until then use `make aws-images`, which builds locally and pushes to
-whichever account you are authenticated against.
+`.github/workflows/build-images.yml` and `deploy.yml` are the pieces that assume
+a single account. Both stay dormant until their repository variable is set
+(`AWS_ROLE_ARN` and `AWS_DEPLOY_ROLE_ARN` — see *Continuous deployment* above);
+until then use `make aws-images` to build and `make aws-deploy` to deploy, both
+of which run against whichever account you are authenticated to.
 
 ---
 
 ## Things that will bite
+
+**A Deploy workflow run fails with `You must be logged in to the server
+(Unauthorized)`.** The IAM role is fine; the cluster has never been told about
+it. `eksctl create cluster` grants admin only to the principal that ran it, and
+the access entry has to be recreated with every cluster. Re-run `make aws-up`
+with `CI_ROLE_ARN` set, or add it by hand:
+
+```bash
+eksctl create accessentry --cluster rentez --principal-arn <role-arn> \
+  --access-policy "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy,accessScope={type=cluster}"
+```
 
 **`kubectl get hpa` shows `<unknown>` for CPU.** metrics-server did not install.
 The HPAs cannot scale without it, and nothing else reports an error.

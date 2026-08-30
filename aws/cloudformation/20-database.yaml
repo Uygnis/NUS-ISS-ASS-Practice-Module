@@ -39,6 +39,15 @@ Parameters:
       load test, and if you do, say so in the report - the ~112 connection
       ceiling is derived from this instance's memory and moves with it.
 
+  Owner:
+    Type: String
+    Default: unknown
+    Description: >
+      Who ran `make aws-up`. Meaningless on a personal account and important on a
+      shared one: with four people sharing an account, `Project=rentez` alone
+      cannot answer "whose cluster ran all weekend". Cost Explorer can group by
+      this once the tag is activated under Billing > Cost allocation tags.
+
   AllocatedStorageGb:
     Type: Number
     Default: 20
@@ -106,6 +115,7 @@ Resources:
       Tags:
         - { Key: Project, Value: rentez }
         - { Key: Layer, Value: ephemeral }
+        - { Key: Owner, Value: !Ref Owner }
 
 Outputs:
   DbEndpoint:

@@ -152,6 +152,27 @@ run_db_pod() {
 	return $rc
 }
 
+# ------------------------------------------------------------------ identity
+# A short human name for whoever is running this, used for the holder record and
+# for the Owner tag on ephemeral resources.
+#
+# Takes the LAST path segment of the caller ARN, which lands on something
+# readable under both access models:
+#
+#   IAM user   arn:aws:iam::123:user/rentez-cli                    -> rentez-cli
+#   Identity   arn:aws:sts::123:assumed-role/AWSReservedSSO_x/a@b  -> a@b
+#             Center
+#
+# Under Identity Center that is the person's email, which is exactly what you
+# want on a shared account: the role name is the same for everyone, the email
+# is not.
+caller_name() {
+	local arn
+	arn="$(aws sts get-caller-identity --query Arn --output text 2>/dev/null || true)"
+	[ -n "$arn" ] || { printf 'unknown'; return; }
+	printf '%s' "${arn##*/}"
+}
+
 # ------------------------------------------------------------------ reaper
 # The deadline the reaper Lambda reads every five minutes. Writing "none"
 # disarms it; writing a timestamp arms it.
@@ -169,4 +190,50 @@ print((dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=$hours)).replace(mi
 disarm_reaper() {
 	aws ssm put-parameter --name /rentez/env/expires-at --type String \
 		--value none --overwrite >/dev/null 2>&1 || true
+}
+
+# ------------------------------------------------------------------ holder
+# WHO CURRENTLY HAS THE ENVIRONMENT.
+#
+# Irrelevant with one account per person, and important the moment an account is
+# shared: the lease is a single timestamp with no notion of ownership, so
+# without this nobody can tell whether the cluster they are about to delete is
+# in use, and `aws-status` cannot say whose four-hour window is running out.
+#
+# Deliberately a CONVENTION, NOT A LOCK. SSM has no compare-and-swap, so two
+# simultaneous `aws-up` runs would still collide inside eksctl. Making that
+# impossible needs real distributed locking, which is disproportionate for a
+# four-person team who can see each other. This makes the collision visible and
+# attributable, which is the part that actually helps.
+#
+# Stored as "<name>|<iso-8601 UTC>".
+hold_env() {
+	aws ssm put-parameter --name /rentez/env/held-by --type String \
+		--value "$(caller_name)|$(python3 -c "
+import datetime as dt
+print(dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat())
+")" --overwrite >/dev/null 2>&1 || true
+}
+
+release_env() {
+	aws ssm put-parameter --name /rentez/env/held-by --type String \
+		--value none --overwrite >/dev/null 2>&1 || true
+}
+
+# Prints "<name>|<iso>" or "none".
+current_holder() {
+	aws ssm get-parameter --name /rentez/env/held-by \
+		--query Parameter.Value --output text 2>/dev/null || printf 'none'
+}
+
+holder_name() {
+	local raw; raw="$(current_holder)"
+	[ "$raw" = "none" ] && { printf 'none'; return; }
+	printf '%s' "${raw%%|*}"
+}
+
+holder_since() {
+	local raw; raw="$(current_holder)"
+	[ "$raw" = "none" ] && { printf ''; return; }
+	printf '%s' "${raw#*|}"
 }

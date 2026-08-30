@@ -1,4 +1,53 @@
-name: Rentez Deploy - GITHUB CONTAINER REGISTRY
+name: Rentez Deploy
+
+# Builds the five service images to ECR and rolls them onto the EKS cluster.
+# Called by dev.yml and prod.yml when Rentez CI passes; never triggered directly
+# by a push, so a deploy can never reference a commit whose tests failed.
+#
+# It runs `make aws-deploy` — the same script a developer runs locally — rather
+# than reimplementing a deploy in YAML, so there is exactly one description of
+# what deploying means. Bringing the environment UP is still `make aws-up` from
+# a laptop: that creates hourly-billed resources and takes twenty minutes, and a
+# workflow should not be able to start spending money on its own.
+#
+# NO GHCR, AND NO GITHUB_TOKEN.
+# An earlier version pushed to GitHub Container Registry. That proved the
+# artifact publishing worked, and was then dropped: EKS pulls from ECR using the
+# node instance profile, so there is no registry credential in the cluster at
+# all. With GHCR gone every leg of this pipeline talks to AWS, and GITHUB_TOKEN
+# cannot authenticate to AWS under any configuration — hence `id-token: write`
+# and OIDC, and no `packages: write` anywhere.
+#
+# EXPECT THIS TO FAIL WHEN NOBODY HAS RUN `make aws-up`.
+# The environment holds a 4-hour lease and a reaper tears it down when it
+# expires, so most merges outside a working session land with no cluster to
+# deploy to. The run fails in about thirty seconds with "no cluster 'rentez' —
+# someone has to run 'make aws-up' first", which is the honest answer. It is not
+# a broken pipeline, and it is not something to fix by removing the check.
+#
+# OPTIONAL, AND OFF UNLESS CONFIGURED.
+# With per-member AWS accounts there is no single account to deploy to, so this
+# workflow does nothing until someone sets the AWS_DEPLOY_ROLE_ARN repository
+# variable. Until then the team uses `make aws-images` and `make aws-deploy`,
+# which run against whichever account the developer is authenticated to.
+#
+# TO ENABLE IT (once, in whichever account you nominate as the shared one):
+#   1. Create a GitHub OIDC identity provider:
+#        aws iam create-open-id-connect-provider \
+#          --url https://token.actions.githubusercontent.com \
+#          --client-id-list sts.amazonaws.com \
+#          --thumbprint-list 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+#   2. Create a role trusting this repository only, with the policy in
+#      aws/iam/ci-deploy-policy.json.
+#   3. Set the AWS_DEPLOY_ROLE_ARN and AWS_REGION repository variables.
+#   4. Export CI_ROLE_ARN=<that role> before running `make aws-up`, so the
+#      cluster grants it an EKS access entry. IAM permission is NOT cluster
+#      permission; skip this and every deploy dies with "You must be logged in
+#      to the server (Unauthorized)".
+#
+# There are deliberately NO long-lived AWS access keys in GitHub secrets. OIDC
+# issues a short-lived credential per run, which is both safer and one less
+# thing to rotate when somebody leaves the team.
 
 on:
   workflow_call:
@@ -6,80 +55,131 @@ on:
       environment:
         required: true
         type: string
+
   workflow_dispatch:
+    inputs:
+      environment:
+        description: Label for this deploy (dev or prod)
+        required: false
+        default: manual
+
+concurrency:
+  # Deliberately NOT keyed on the ref. dev and main deploy to the SAME cluster,
+  # and two concurrent Helm rolls interleave their releases with the loser
+  # winning. Queue instead.
+  group: deploy
+  # And deliberately not cancel-in-progress: a half-applied deploy is worse than
+  # a slow one. Never kill a running roll to start a newer one.
+  cancel-in-progress: false
 
 permissions:
   contents: read
-  packages: write
+  id-token: write
 
-# Adjust this if the chart lives somewhere other than charts/rentez in the repo.
 env:
-  # HELM_CHART_PATH: charts/rentez
-  REGISTRY: ghcr.io
-  IMAGE_TAG: ${{ github.sha }}
+  AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-1' }}
 
 jobs:
-  deploy:
+  # ---------------------------------------------------------------- 1. build
+  build:
+    name: build ${{ matrix.service }}
     runs-on: ubuntu-latest
+    if: vars.AWS_DEPLOY_ROLE_ARN != ''
+
+    outputs:
+      short: ${{ steps.tags.outputs.short }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # The frontend is deliberately absent. It is not a container in this
+        # architecture: aws-deploy.sh runs `npm run build` and syncs the result
+        # to S3 behind CloudFront.
+        service:
+          - account-service
+          - catalog-service
+          - notification-service
+          - payment-service
+          - reservation-service
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
-      - name: Show environment
-        run: |
-          echo "CD pipeline is running!"
-          echo "Repository: $GITHUB_REPOSITORY"
-          echo "Branch: $GITHUB_REF_NAME"
-
-      # - name: Set up Helm
-      #   uses: azure/setup-helm@v4
-      #   with:
-      #     version: v3.15.3
-
-      - name: Build images
-
-        run: |
-          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-
-          docker build \
-            -f ./frontend/Dockerfile.dev \
-            -t ghcr.io/${OWNER}/rentez-frontend:${IMAGE_TAG} \
-            ./frontend
-
-          docker build \
-            -f ./services/catalog-service/Dockerfile.dev \
-            -t ghcr.io/${OWNER}/rentez-catalog-service:${IMAGE_TAG} \
-            ./services/catalog-service
-
-          docker build \
-            -f ./services/account-service/Dockerfile.dev \
-            -t ghcr.io/${OWNER}/rentez-account-service:${IMAGE_TAG} \
-            ./services/account-service
-
-          docker build \
-            -f ./services/notification-service/Dockerfile.dev \
-            -t ghcr.io/${OWNER}/rentez-notification-service:${IMAGE_TAG} \
-            ./services/notification-service
-
-          docker build \
-            -f ./services/reservation-service/Dockerfile.dev \
-            -t ghcr.io/${OWNER}/rentez-reservation-service:${IMAGE_TAG} \
-            ./services/reservation-service
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Push images
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      # `make aws-deploy` defaults TAG to `git rev-parse --short=7`, so the short
+      # form is the one a developer deploys by hand. Pushing both means either
+      # works, and a full SHA copied out of a CI log is never a dead end.
+      - name: Resolve tags
+        id: tags
+        run: echo "short=$(echo '${{ github.sha }}' | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: services/${{ matrix.service }}
+          file: services/${{ matrix.service }}/Dockerfile.dev
+          push: true
+          # linux/amd64 explicitly: the node group is t3/m5, which are x86. An
+          # arm64 image fails at runtime with "exec format error", which does
+          # not mention architecture and wastes an afternoon.
+          platforms: linux/amd64
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/rentez-${{ matrix.service }}:${{ steps.tags.outputs.short }}
+            ${{ steps.ecr.outputs.registry }}/rentez-${{ matrix.service }}:${{ github.sha }}
+          # GitHub's own cache, so the Maven dependency layer survives between
+          # runs. Dockerfile.dev has no BuildKit cache mount of its own, so
+          # without this every run re-resolves the whole tree, five times over.
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  # --------------------------------------------------------------- 2. deploy
+  deploy:
+    name: Deploy to AWS
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # aws-deploy.sh builds the frontend for real before syncing it to S3.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: azure/setup-helm@v4
+      - uses: azure/setup-kubectl@v4
+      # eksctl is not installed: this half creates no infrastructure.
+
+      - name: Deploy
+        run: make aws-deploy TAG=${{ needs.build.outputs.short }}
+
+      # dev and main share one cluster, so the last deploy wins. This line is
+      # the only record of which branch put what there.
+      - name: Report
         run: |
-          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-
-          docker push ghcr.io/${OWNER}/rentez-frontend:${IMAGE_TAG}
-          docker push ghcr.io/${OWNER}/rentez-catalog-service:${IMAGE_TAG}
-          docker push ghcr.io/${OWNER}/rentez-account-service:${IMAGE_TAG}
-          docker push ghcr.io/${OWNER}/rentez-notification-service:${IMAGE_TAG}
-          docker push ghcr.io/${OWNER}/rentez-reservation-service:${IMAGE_TAG}
+          URL=$(aws cloudformation describe-stacks --stack-name rentez-persistent \
+                  --query "Stacks[0].Outputs[?OutputKey=='AppUrl'].OutputValue" --output text)
+          {
+            echo "Deployed \`${{ needs.build.outputs.short }}\` from **${{ inputs.environment }}** to $URL"
+            echo ""
+            echo "One cluster is shared by dev and main — the most recent deploy is what is live."
+          } >> "$GITHUB_STEP_SUMMARY"

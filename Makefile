@@ -12,7 +12,9 @@
 #   make aws-check      verify tooling and credentials
 #   make aws-bootstrap  once per account; creates only free things
 #   make aws-up         cluster + database, ~20 min, ~$0.21/hr
-#   make aws-status     what is running, and when it expires
+#   make aws-deploy     redeploy the app to a running env, ~3 min (CI does this)
+#   make aws-status     what is running, who has it, when it expires
+#   make aws-extend     push the lease out without redeploying
 #   make aws-down       dump to S3, then destroy everything hourly-billed
 
 SHELL         := /bin/bash
@@ -275,9 +277,17 @@ aws-bootstrap: ## Once per account: budgets, secrets, VPC, ECR, CloudFront (all 
 aws-up: ## Bring up the cluster and database (~20 min). TTL_HOURS=4 by default
 	@TTL_HOURS="$(or $(TTL_HOURS),4)" TAG="$(TAG)" RESTORE="$(or $(RESTORE),1)" $(AWS_SCRIPTS)/aws-up.sh
 
+.PHONY: aws-deploy
+aws-deploy: ## Deploy the app to an already-running environment (~3 min, no infra)
+	@TAG="$(TAG)" $(AWS_SCRIPTS)/aws-deploy.sh
+
 .PHONY: aws-status
 aws-status: ## What is running, the burn rate, and when the lease expires
 	@$(AWS_SCRIPTS)/aws-status.sh
+
+.PHONY: aws-extend
+aws-extend: ## Push the lease out without redeploying (make aws-extend HOURS=8)
+	@HOURS="$(or $(HOURS),4)" $(AWS_SCRIPTS)/aws-extend.sh
 
 .PHONY: aws-down
 aws-down: ## Dump to S3, then destroy everything billed by the hour

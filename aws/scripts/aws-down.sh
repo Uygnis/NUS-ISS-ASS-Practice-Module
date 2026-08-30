@@ -29,6 +29,29 @@ require_tools aws eksctl kubectl
 require_credentials
 require_persistent_stack
 
+# ------------------------------------------------------------ whose is this?
+# Only meaningful on a shared account, and there it matters a lot: the reaper
+# aside, `aws-down` is the one command that destroys a colleague's work with no
+# undo. A holder record cannot prevent that - SSM has no locking - but it can
+# make sure nobody does it by accident.
+#
+# FORCE=1 skips the prompt, which is what aws-nuke passes and what a
+# non-interactive shell requires.
+HOLDER="$(holder_name)"
+ME="$(caller_name)"
+if [ "$HOLDER" != "none" ] && [ "$HOLDER" != "$ME" ] && [ "${FORCE:-0}" != "1" ]; then
+	printf "\n"
+	warn "this environment was brought up by $HOLDER, not you"
+	warn "held since $(holder_since)"
+	if [ -t 0 ]; then
+		printf "\n  Tear it down anyway? Type yes to continue: "
+		read -r CONFIRM
+		[ "$CONFIRM" = "yes" ] || die "cancelled — nothing deleted."
+	else
+		die "refusing to destroy $HOLDER's environment from a non-interactive shell. Re-run with FORCE=1 if you are certain."
+	fi
+fi
+
 # ------------------------------------------------------------------ 1. backup
 step "1/5  Backup"
 if ! cluster_exists; then
@@ -150,7 +173,8 @@ aws cloudformation deploy \
 ok "CloudFront origin reset"
 
 disarm_reaper
-ok "reaper disarmed"
+release_env
+ok "reaper disarmed and the environment released"
 
 step "Down"
 cat <<EOF

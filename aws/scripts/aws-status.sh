@@ -80,6 +80,20 @@ print('EXPIRED — the reaper is tearing it down now' if left <= 0
 	row "" "$REMAINING"
 fi
 
+# Who has it. Silent on a personal account (the holder is always you); the
+# useful line on a shared one, where "can I tear this down?" otherwise means
+# asking in the group chat and hoping.
+HOLDER="$(holder_name)"
+if [ "$HOLDER" != "none" ]; then
+	if [ "$HOLDER" = "$(caller_name)" ]; then
+		row "held by" "you, since $(holder_since)"
+	else
+		row "held by" "$HOLDER, since $(holder_since)"
+	fi
+elif [ "$HOURLY" != "0" ]; then
+	row "held by" "nobody claimed it — brought up before holder tracking, or by the console"
+fi
+
 # ------------------------------------------------------------------ cost
 printf "\n"
 if [ "$HOURLY" = "0" ]; then

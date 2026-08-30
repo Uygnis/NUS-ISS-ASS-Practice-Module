@@ -54,7 +54,9 @@ read -r CONFIRM
 # aws-down means the teardown ordering (ALB, then cluster, then database) is
 # defined in exactly one place.
 step "Tearing down the running environment first"
-SKIP_BACKUP=1 bash "$(dirname "${BASH_SOURCE[0]}")/aws-down.sh" || warn "aws-down reported problems; continuing"
+# FORCE=1: the account id was already typed to confirm, and aws-down must not
+# stop to ask a second time about a holder who may not even be around.
+SKIP_BACKUP=1 FORCE=1 bash "$(dirname "${BASH_SOURCE[0]}")/aws-down.sh" || warn "aws-down reported problems; continuing"
 
 step "Emptying buckets"
 # CloudFormation refuses to delete a non-empty bucket, and a versioned bucket is
