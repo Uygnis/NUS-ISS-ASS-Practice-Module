@@ -1,0 +1,29 @@
+# reservation-service — M3 Booking
+#
+# Values that differ from deploy/helm/rentez-service/values.yaml. Anything shared
+# by all five services belongs there, not here.
+
+serviceName: reservation-service
+
+
+database:
+  user: booking_user
+  passwordParameter: booking-db-password
+
+# THE SCALING DEMONSTRATION. 2 to 10 is the widest range in the platform and the
+# one the graded load test exercises.
+#
+# It scales safely only because correctness does not depend on pod count: the
+# composite primary key on booking_day rejects a double booking no matter how
+# many replicas race, so there is no distributed lock and no application-level
+# coordination to become the bottleneck.
+
+ingress:
+  enabled: true
+  path: /api/reservations
+  order: 102
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10

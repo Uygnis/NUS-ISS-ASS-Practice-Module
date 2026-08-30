@@ -9,53 +9,54 @@
 -- schema history, and makes it impossible to re-run a load test against a
 -- clean database without rebuilding the schema.
 --
--- STATUS: intentionally empty. The tables do not exist yet — no service has
--- Flyway migrations. Uncomment and extend each block as its module lands.
--- `make seed` succeeds against this file as-is, so the command is safe to run
--- from day one.
+-- PREFER THE SEED PROFILE OVER THIS FILE.
+-- Each service ships a profile-gated DataSeeder bean, and
+--
+--     SPRING_PROFILES_ACTIVE=seed make up
+--
+-- is the supported way to get demo accounts and a starter fleet. Those seeders
+-- go through the same code path the application uses, so BCrypt hashes are real
+-- and enum values cannot drift. This file exists for bulk data that would be
+-- slow to insert through the API — the 200 vehicles the load test wants — and
+-- is intentionally empty until someone needs exactly that.
 
-SELECT 'RentEZ seed: no data loaded yet — add migrations first' AS status;
+SELECT 'RentEZ seed: no data loaded yet — use SPRING_PROFILES_ACTIVE=seed make up' AS status;
 
 -- ============================================ M1 · rentez_auth (account-service)
--- Passwords below must be real BCrypt hashes (work factor 12, per PRD §2.11).
--- Generate one with:
---   docker run --rm eclipse-temurin:21-jre sh -c \
---     'echo "use org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder"'
--- or simply register through the API once it exists and copy the stored hash.
+-- The table is app_user, not `users`. Passwords must be real BCrypt hashes;
+-- register once through /api/accounts and copy the stored hash rather than
+-- inventing one.
 --
--- INSERT IGNORE INTO rentez_auth.users
---   (id, public_id, email, password_hash, role, status, created_at) VALUES
---   (1, '01J0000000000000000000ADM1', 'admin@rentez.test',    '$2a$12$REPLACE_ME', 'ADMIN',    'ACTIVE', NOW(3)),
---   (2, '01J0000000000000000000STF1', 'staff@rentez.test',    '$2a$12$REPLACE_ME', 'STAFF',    'ACTIVE', NOW(3)),
---   (3, '01J0000000000000000000CUS1', 'customer@rentez.test', '$2a$12$REPLACE_ME', 'CUSTOMER', 'ACTIVE', NOW(3));
+-- INSERT INTO rentez_auth.app_user
+--   (full_name, email, password_hash, role, enabled, created_at) VALUES
+--   ('Demo Admin',    'admin@rentez.test',    '$2a$12$REPLACE_ME', 'ADMIN',    TRUE, NOW()),
+--   ('Demo Staff',    'staff@rentez.test',    '$2a$12$REPLACE_ME', 'STAFF',    TRUE, NOW()),
+--   ('Demo Customer', 'customer@rentez.test', '$2a$12$REPLACE_ME', 'CUSTOMER', TRUE, NOW())
+-- ON CONFLICT (email) DO NOTHING;
 
 -- =========================================== M2 · rentez_fleet (catalog-service)
--- PRD assumption 10: approximately 200 vehicles and 50 seeded customers.
--- Start with five for development; generate the full 200 for the load test.
+-- PRD assumption 10: approximately 200 vehicles and 50 seeded customers. Five is
+-- enough for development; generate the full 200 here for the load test, which is
+-- the one case where going through the API would be needlessly slow.
 --
--- INSERT IGNORE INTO rentez_fleet.locations
---   (id, code, name, address, created_at) VALUES
---   (1, 'SIN-CBD',  'Raffles Place Branch', '1 Raffles Place, Singapore',  NOW(3)),
---   (2, 'SIN-CHGI', 'Changi Airport T3',    'Airport Boulevard, Singapore', NOW(3));
+-- The table is car, and the richer fleet model in docs/ch02 (locations,
+-- categories, rate_plans) is a later migration that does not exist yet — daily
+-- rate lives on the car row for now.
 --
--- INSERT IGNORE INTO rentez_fleet.vehicles
---   (id, public_id, plate_no, make, model, category_id, location_id, status, created_at) VALUES
---   (1, '01J000000000000000000VEH1', 'SGA1234A', 'Toyota',  'Corolla Altis', 1, 1, 'AVAILABLE',   NOW(3)),
---   (2, '01J000000000000000000VEH2', 'SGB5678B', 'Honda',   'Vezel',         2, 1, 'AVAILABLE',   NOW(3)),
---   (3, '01J000000000000000000VEH3', 'SGC9012C', 'Hyundai', 'Avante',        1, 2, 'AVAILABLE',   NOW(3)),
---   (4, '01J000000000000000000VEH4', 'SGD3456D', 'Toyota',  'Alphard',       3, 2, 'MAINTENANCE', NOW(3)),
---   (5, '01J000000000000000000VEH5', 'SGE7890E', 'Mazda',   'CX-5',          2, 1, 'AVAILABLE',   NOW(3));
+-- INSERT INTO rentez_fleet.car
+--   (make, model, model_year, daily_rate, location, type, status) VALUES
+--   ('Toyota',  'Corolla Altis', 2023,  85.00, 'Raffles Place',  'SEDAN',     'AVAILABLE'),
+--   ('Honda',   'Vezel',         2022, 120.00, 'Raffles Place',  'SUV',       'AVAILABLE'),
+--   ('Hyundai', 'Avante',        2024,  90.00, 'Changi T3',      'SEDAN',     'AVAILABLE'),
+--   ('Toyota',  'Alphard',       2021, 190.00, 'Changi T3',      'LUXURY',    'MAINTENANCE'),
+--   ('Tesla',   'Model 3',       2024, 160.00, 'Raffles Place',  'ELECTRIC',  'AVAILABLE');
 --
--- Rate plans need effective dating (PRD ADR-001). Exactly one active plan must
--- exist per category for every date in the bookable window, or quotation fails.
---
--- INSERT IGNORE INTO rentez_fleet.rate_plans
---   (id, category_id, daily_rate, currency, effective_from, effective_to, is_active) VALUES
---   (1, 1,  85.00, 'SGD', '2026-01-01', NULL, TRUE),
---   (2, 2, 120.00, 'SGD', '2026-01-01', NULL, TRUE),
---   (3, 3, 190.00, 'SGD', '2026-01-01', NULL, TRUE);
+-- Postgres note: ON CONFLICT needs a unique constraint to target, and car has
+-- none beyond the primary key. Either add a plate number column first or rely on
+-- `make clean` for idempotence, which is what the seed profile does.
 
 -- ====================================== M3 · rentez_booking (reservation-service)
--- Leave empty. Bookings should be created through the API so that the
--- reservation rows in vehicle_date_reservations are written by the same code
--- path the load test exercises.
+-- Leave empty. Bookings must be created through the API so that the rows in
+-- booking_day are written by the same code path the load test exercises — that
+-- table's composite primary key IS the concurrency guarantee, and seeding around
+-- it would prove nothing.

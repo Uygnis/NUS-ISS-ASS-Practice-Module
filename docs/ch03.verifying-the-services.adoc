@@ -22,7 +22,7 @@ make check
 
 It verifies the toolchain, warns if Docker has under 8 GB, creates `.env` from `.env.example` if missing, and confirms the passwords there match `db/init/01-schemas.sql`.
 
-WARNING: The full stack is five JVMs plus MySQL, DynamoDB Local, Adminer and nginx — roughly 5.5 GB. Under 8 GB, containers get OOM-killed with no useful error.
+WARNING: The full stack is five JVMs plus PostgreSQL, DynamoDB Local, Adminer and nginx — roughly 5.5 GB. Under 8 GB, containers get OOM-killed with no useful error.
 
 == Starting the stack
 
@@ -33,7 +33,7 @@ Two modes. Both start the infrastructure; they differ in where the services run.
 | | *Mode A — `make infra`* | *Mode B — `make up`*
 
 | In Docker
-| MySQL, DynamoDB, Adminer, gateway
+| PostgreSQL, DynamoDB, Adminer, gateway
 | the above, plus all five services
 
 | Services run
@@ -56,7 +56,7 @@ For everything in this chapter, use Mode B *with the seed profile*, which loads 
 SPRING_PROFILES_ACTIVE=seed make up
 ----
 
-The seeders are profile-gated on purpose. MySQL persists between runs — unlike the monolith's in-memory H2 — so unconditional seeding would violate the email unique constraint on the second boot. They are also idempotent, so re-running with the profile on is safe.
+The seeders are profile-gated on purpose. PostgreSQL persists between runs — unlike the monolith's in-memory H2 — so unconditional seeding would violate the email unique constraint on the second boot. They are also idempotent, so re-running with the profile on is safe.
 
 Services need about 40 seconds to become healthy. Watch them:
 
@@ -111,7 +111,7 @@ An *"Access denied"* is the *correct* result:
 ERROR 1142 (42000): SELECT command denied to user 'auth_user'@'localhost' for table 'booking'
 ....
 
-This is the evidence that schema-per-service isolation is enforced by MySQL grants rather than by convention. Any service could later be moved to its own database instance with a connection-string change and no schema change.
+This is the evidence that schema-per-service isolation is enforced by PostgreSQL privileges rather than by convention. Each schema is owned by its own login role and no `USAGE` is granted to anyone else, so the refusal happens at the schema level — `permission denied for schema rentez_booking` — before the table is even considered. Any service could later be moved to its own instance with a connection-string change and no schema change.
 
 === 3. The whole flow, end to end
 
@@ -131,7 +131,7 @@ It also asserts the things that regress silently: no BCrypt hash in any response
 make test-backend
 ----
 
-70 tests across the five services, each against a real MySQL 8 container via Testcontainers. This is also the only place the Flyway migrations run automatically and Hibernate validates the entities against them.
+71 tests across the five services, each against a real PostgreSQL 16 container via Testcontainers. This is also the only place the Flyway migrations run automatically and Hibernate validates the entities against them.
 
 NOTE: These need Docker. Without it, use `./mvnw verify -DskipTests` to compile only.
 
@@ -355,8 +355,8 @@ The interesting part is what survives the error:
 
 [source,bash]
 ----
-docker compose exec mysql mysql -uroot -prentez \
-  -e "select id,booking_id,status,confirm_state,failure_reason from rentez_payment.payment order by id desc limit 2;"
+docker compose exec -T postgres psql -U postgres -d rentez \
+  -c "select id,booking_id,status,confirm_state,failure_reason from rentez_payment.payment order by id desc limit 2;"
 ----
 
 ....
@@ -407,8 +407,8 @@ Stop notification-service, cancel a booking, and the cancellation still succeeds
 docker compose stop notification-service
 curl -sS -X DELETE http://localhost:8080/api/reservations/bookings/9 -H "Authorization: Bearer $TOKEN"   # 200
 
-docker compose exec mysql mysql -uroot -prentez \
-  -e "select event_type,status,attempt_count from rentez_booking.outbox_event order by id desc limit 3;"
+docker compose exec -T postgres psql -U postgres -d rentez \
+  -c "select event_type,status,attempt_count from rentez_booking.outbox_event order by id desc limit 3;"
 ----
 
 The row sits `PENDING` with a rising `attempt_count`. Start notification-service again and it is delivered within a couple of seconds, with no duplicate — the consumer de-duplicates on `event_id`.
@@ -419,27 +419,27 @@ In the monolith, `BookingService` called `notificationService.bookingCancelled(.
 
 === Adminer
 
-http://localhost:8090 — server `mysql`, user `root`, password from `.env`. Browse all five schemas.
+http://localhost:8090 — system *PostgreSQL*, server `postgres`, user `postgres`, password from `.env`, database `rentez`. All five schemas appear in the left-hand pane.
 
-Per-service credentials, if you want to see the isolation from the inside: `auth_user`, `fleet_user`, `booking_user`, `payment_user`, `notification_user`.
+Per-service credentials, if you want to see the isolation from the inside: `auth_user`, `fleet_user`, `booking_user`, `payment_user`, `notification_user`. Each sees only its own schema.
 
 === Useful queries
 
 [source,bash]
 ----
 # the double-booking guard, one row per rented day
-docker compose exec mysql mysql -uroot -prentez \
-  -e "select * from rentez_booking.booking_day order by car_id, day limit 10;"
+docker compose exec -T postgres psql -U postgres -d rentez \
+  -c "select * from rentez_booking.booking_day order by car_id, day limit 10;"
 
 # outbox delivery across both producers
-docker compose exec mysql mysql -uroot -prentez \
-  -e "select event_type,status,attempt_count from rentez_booking.outbox_event;"
-docker compose exec mysql mysql -uroot -prentez \
-  -e "select event_type,status,attempt_count from rentez_payment.outbox_event;"
+docker compose exec -T postgres psql -U postgres -d rentez \
+  -c "select event_type,status,attempt_count from rentez_booking.outbox_event;"
+docker compose exec -T postgres psql -U postgres -d rentez \
+  -c "select event_type,status,attempt_count from rentez_payment.outbox_event;"
 
 # payments needing reconciliation — should normally be empty
-docker compose exec mysql mysql -uroot -prentez \
-  -e "select id,booking_id,status,confirm_state,last_error from rentez_payment.payment
+docker compose exec -T postgres psql -U postgres -d rentez \
+  -c "select id,booking_id,status,confirm_state,last_error from rentez_payment.payment
       where confirm_state in ('PENDING','AWAITING_COMPENSATION') and status in ('SUCCESS','REFUNDED');"
 ----
 
@@ -459,7 +459,7 @@ Notification delivery is logged as `[notification -> email] (TYPE) message` — 
 make dynamo
 ----
 
-Lists `rentez-sessions`, `rentez-availability` and `rentez-audit`. These are provisioned but *not yet used* — audit currently lives in each service's own MySQL schema. See ch02 for the intended future use.
+Lists `rentez-sessions`, `rentez-availability` and `rentez-audit`. These are provisioned but *not yet used* — audit currently lives in each service's own PostgreSQL schema. See ch02 for the intended future use.
 
 == Shutting down
 

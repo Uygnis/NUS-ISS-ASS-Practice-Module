@@ -184,6 +184,44 @@ class CatalogFlowIntegrationTest {
 				.andExpect(status().isUnauthorized());
 	}
 
+	/**
+	 * Reservation's availability search calls the internal rentable list with
+	 * NEITHER filter set, on every request. That is the one path that reaches
+	 * {@code CarRepository.findByFilters} with two null parameters, and on
+	 * PostgreSQL it is a real trap: an untyped null binds as {@code bytea}, and
+	 * the planner rejects the whole statement with "function lower(bytea) does
+	 * not exist" before it ever evaluates the OR branch that would have skipped
+	 * the filter. MySQL coerced silently, so this only surfaced during the port.
+	 *
+	 * <p>Every other test here passes at least one filter, or goes through
+	 * {@code CarController}, which short-circuits the both-null case to a
+	 * different query. This test exists so that the {@code cast(... as String)}
+	 * cannot be tidied away by someone who reads it as noise.
+	 */
+	@Test
+	void internalRentableListAcceptsNoFilters() throws Exception {
+		MockMvc mvc = mvc();
+		createCar(mvc, "Hyundai", "Avante");
+
+		mvc.perform(get("/api/catalog/internal/cars")
+						.header("Authorization", "Bearer " + TestTokens.service()))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$[0].rentable").value(true));
+
+		// The filters still work when they are supplied.
+		mvc.perform(get("/api/catalog/internal/cars")
+						.param("location", "jurong")
+						.header("Authorization", "Bearer " + TestTokens.service()))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$[0].rentable").value(true));
+
+		mvc.perform(get("/api/catalog/internal/cars")
+						.param("location", "nowhere")
+						.header("Authorization", "Bearer " + TestTokens.service()))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$").isEmpty());
+	}
+
 	@Test
 	void internalCarViewReportsAMaintenanceCarAsNotRentable() throws Exception {
 		MockMvc mvc = mvc();

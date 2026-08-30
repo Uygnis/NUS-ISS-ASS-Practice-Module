@@ -65,8 +65,9 @@
 		       the classpath and is never invoked - migrations silently do not run and
 		       Hibernate then fails with "Schema validation: missing table".
 		     - flyway-core         the engine.
-		     - flyway-mysql        since Flyway 10 the MySQL support is a separate
-		       module; core alone fails with "No database found to handle jdbc:mysql". -->
+		     - flyway-database-postgresql  since Flyway 10 the Postgres support is a
+		       separate module; core alone fails with "No database found to
+		       handle jdbc:postgresql". -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-flyway</artifactId>
@@ -77,13 +78,13 @@
 		</dependency>
 		<dependency>
 			<groupId>org.flywaydb</groupId>
-			<artifactId>flyway-mysql</artifactId>
+			<artifactId>flyway-database-postgresql</artifactId>
 		</dependency>
 
-		<!-- MySQL, not MSSQL - see the note in catalog-service/pom.xml. -->
+		<!-- PostgreSQL - see the note in catalog-service/pom.xml. -->
 		<dependency>
-			<groupId>com.mysql</groupId>
-			<artifactId>mysql-connector-j</artifactId>
+			<groupId>org.postgresql</groupId>
+			<artifactId>postgresql</artifactId>
 			<scope>runtime</scope>
 		</dependency>
 		<dependency>
@@ -117,17 +118,18 @@
 			<scope>test</scope>
 		</dependency>
 
-		<!-- Tests run against a real MySQL 8 container via @ServiceConnection.
+		<!-- Tests run against a real PostgreSQL 16 container via @ServiceConnection.
 		     Without this, @SpringBootTest has no database: Hibernate opens a JDBC
 		     connection just to resolve the dialect, and contextLoads fails on any
 		     machine that is not running `make infra`. It is also the only way the
 		     Flyway migrations are ever executed in CI.
 
 		     Do NOT substitute H2 - docs/ch01 forbids it, and Car.model_year already
-		     exists as a workaround for an H2-vs-MySQL reserved word disagreement.
+		     exists as a workaround for an H2 reserved word disagreement.
 
 		     NOTE the artifact names. Spring Boot 4.1.0 manages Testcontainers 2.0.5,
-		     which renamed every module: it is testcontainers-mysql, NOT mysql. The
+		     which renamed every module: it is testcontainers-postgresql, NOT
+		     postgresql. The
 		     1.x names still resolve from Central, so a copy-paste from any older
 		     guide silently mixes a 1.x module with the 2.x core and fails at
 		     runtime with moved-package errors. -->
@@ -138,7 +140,7 @@
 		</dependency>
 		<dependency>
 			<groupId>org.testcontainers</groupId>
-			<artifactId>testcontainers-mysql</artifactId>
+			<artifactId>testcontainers-postgresql</artifactId>
 			<scope>test</scope>
 		</dependency>
 		<dependency>

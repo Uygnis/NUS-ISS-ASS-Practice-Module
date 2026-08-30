@@ -1,0 +1,73 @@
+# Defaults shared by all five services. Anything a service actually differs on
+# is overridden in deploy/helm/values/<service>.yaml; anything identical stays
+# here, so a change to probes or resources is made once.
+
+# Set per service.
+serviceName: ""
+
+image:
+  # The ECR registry, filled in by `make aws-up` from the persistent stack's
+  # output. Never hard-code an account ID here - it differs per teammate.
+  registry: ""
+  # Pinned to a git SHA by `make aws-up`, never "latest". A moving tag makes
+  # "which build is actually running?" unanswerable, and Kubernetes will not
+  # re-pull an unchanged tag anyway, so `latest` also breaks deploys.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+# EVERY SERVICE LISTENS ON 8080 INSIDE ITS CONTAINER. The 8081-8085 numbers in
+# docker-compose.yml are host port mappings for local development and have no
+# meaning here - the ALB routes on path, not port.
+containerPort: 8080
+
+serviceAccount:
+  # Created by eksctl with an IRSA role that can read /rentez/* from SSM.
+  name: rentez-app
+  create: false
+
+ingress:
+  enabled: true
+  # /api/accounts, /api/catalog, ... MUST match scripts/gateway.conf, which is
+  # the local nginx mirror of this routing. If the two drift, the app works in
+  # one environment and 404s in the other.
+  path: ""
+
+resources:
+  requests:
+    # REQUESTS DRIVE NODE COUNT, AND NODE COUNT IS MOST OF THE BILL.
+    # Requesting the 768Mi that docker-compose caps each JVM at would force a
+    # third node at baseline for no benefit, because these services idle far
+    # below their ceiling. 256Mi/200m fits ten baseline pods on two t3.large.
+    memory: 256Mi
+    cpu: 200m
+  limits:
+    # Matches mem_limit in docker-compose.yml, so a memory leak behaves the same
+    # locally and on AWS.
+    memory: 768Mi
+    cpu: 1000m
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4
+  # 60% of the 200m REQUEST, not of the limit. That is what makes the HPA fire
+  # at a sensible point; targeting a percentage of a 1000m limit would mean it
+  # effectively never scales.
+  targetCPUUtilizationPercentage: 60
+
+# JAVA_TOOL_OPTIONS is not optional. Without MaxRAMPercentage the JVM sizes its
+# heap from the NODE's memory rather than the container limit, so five JVMs each
+# decide they may use most of 8 GiB and the node OOMs.
+javaToolOptions: "-XX:MaxRAMPercentage=70"
+
+env: {}
+
+database:
+  # Every service points at the SAME database. Which of the five schemas it sees
+  # is decided by its role's search_path - see db/init/01-schemas.sql.
+  name: rentez
+  user: ""
+  # SSM parameter holding this service's role password, set per service.
+  passwordParameter: ""

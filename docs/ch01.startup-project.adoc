@@ -22,16 +22,16 @@ connection actually works.
 [NOTE]
 ====
 *Document stamp:* `{docstamp}` +
-*Applies to:* `{repo}` — four Spring Boot 4.1 services, a React frontend, one
-MySQL instance with five schemas, and DynamoDB Local. +
+*Applies to:* `{repo}` — five Spring Boot 4.1 services, a React frontend, one
+PostgreSQL instance with five schemas, and DynamoDB Local. +
 *Audience:* every member of Team 2. Read section <<quickstart>> on your first
 day; the rest is reference.
 ====
 
 == What you are building
 
-RentEZ is a microservice platform. Locally it runs as nine containers, but you
-rarely need all nine at once — see <<modes>>.
+RentEZ is a microservice platform. Locally it runs as ten containers, but you
+rarely need all ten at once — see <<modes>>.
 
 [cols="2,1,4",options="header"]
 |===
@@ -43,7 +43,8 @@ rarely need all nine at once — see <<modes>>.
 | `reservation-service`     | `8082` | Booking — PRD module M3
 | `catalog-service`         | `8083` | Fleet and vehicle catalogue — PRD module M2
 | `notification-service`    | `8084` | Notifications — PRD module M5
-| MySQL 8.0                 | `3306` | One instance, five schemas
+| `payment-service`         | `8085` | Payment and refund — PRD module M4
+| PostgreSQL 16             | `5432` | One instance, one database, five schemas
 | Adminer                   | `8090` | Click-to-browse database UI
 | DynamoDB Local            | `8000` | Sessions, availability projection, audit trail
 |===
@@ -76,23 +77,29 @@ make db-check   # <4>
 <2> Builds and starts everything. First run pulls images and resolves Maven
     dependencies — allow ten minutes. Subsequent runs take under a minute.
 <3> Loads demo vehicles, users and bookings.
-<4> Confirms all four services can reach their own schema.
+<4> Confirms all five services can reach their own schema.
 
 Then open http://localhost:3000.
 
 .Expected output of `make db-check`
 [source,text]
 ----
-  account-service       :8081   NO-DB rentez_auth
-  reservation-service   :8082   UP    rentez_booking
-  catalog-service       :8083   UP    rentez_fleet
-  notification-service  :8084   NO-DB rentez_notification
+  SERVICE                PORT    STATUS   SCHEMA
+  account-service        :8081   UP       rentez_auth
+  reservation-service    :8082   UP       rentez_booking
+  catalog-service        :8083   UP       rentez_fleet
+  notification-service   :8084   UP       rentez_notification
+  payment-service        :8085   UP       rentez_payment
 ----
 
-`NO-DB` for `account-service` and `notification-service` is *correct today* —
-neither owns persistence code yet, so both still have JPA commented out. `UP`
-means the datasource is reachable; `DOWN` means the service is not responding
-and you should go to <<troubleshooting>>.
+All five should read `UP`. `UP` means the service reached its own schema;
+`NO-DB` means it is running but exposes no datasource health component, and
+`DOWN` means it is not responding at all — go to <<troubleshooting>>.
+
+Follow it with `make db-isolation`, which tries to read `rentez_booking` as
+`auth_user`. A `permission denied for schema` there is the *pass*: it is the
+evidence that the service boundaries are enforced by PostgreSQL privileges
+rather than by convention.
 
 [[raw-compose]]
 === Without `make`
@@ -120,11 +127,11 @@ need them if you are on Windows without WSL2, or if the `Makefile` is mid-edit.
 | `make logs S=catalog-service`
 | `docker compose logs -f catalog-service`
 
-| `make mysql`
-| `docker compose exec mysql mysql -uroot -prentez`
+| `make psql`
+| `docker compose exec postgres psql -U postgres -d rentez`
 
 | `make seed`
-| `docker compose exec -T mysql mysql -uroot -prentez < db/seed/01-demo-data.sql`
+| `docker compose exec -T postgres psql -U postgres -d rentez -f - < db/seed/01-demo-data.sql`
 |===
 
 .Start everything — backend services, frontend, database and tooling
@@ -153,22 +160,103 @@ the database, DynamoDB Local, Adminer and the gateway — Mode A. Adding
 | Maven          | —     | Use the committed `./mvnw` wrapper; no separate install needed
 | Node.js        | 22    | Matches the version CI uses
 | Git            | 2.4+  | —
-| GNU Make       | any   | Ships with macOS and Linux. *Windows: use WSL2*, or the raw commands in <<raw-compose>>
+| GNU Make       | any   | Ships with macOS and Linux. *Windows: see <<windows>>*
 |===
 
 [WARNING]
 ====
-*Docker Desktop defaults to 2 GB of memory on some installations.* Four JVMs
-plus MySQL under a 2 GB ceiling produces OOM kills with no useful error
+*Docker Desktop defaults to 2 GB of memory on some installations.* Five JVMs
+plus Postgres under a 2 GB ceiling produces OOM kills with no useful error
 message — containers simply vanish and the logs say nothing.
 
 Set it in menu:Docker Desktop[Settings > Resources > Memory] to *8 GB* before
 your first `make up`. `make check` warns you if it is too low.
 ====
 
-Only the person deploying to AWS needs `aws`, `kubectl`, `helm`, `terraform`
-and `jq`. *Four of five teammates never need an AWS account at all* — the local
-stack has no cloud dependency whatsoever.
+Only someone deploying to AWS needs `aws`, `eksctl`, `kubectl`, `helm` and
+`jq`. *Nobody needs an AWS account to write application code* — the local stack
+has no cloud dependency whatsoever.
+
+[[windows]]
+=== On Windows
+
+There is no separate Windows version of this project and there does not need to
+be one. *Develop inside WSL2* and everything below works exactly as it does on
+macOS — same `make` targets, same scripts, same output.
+
+[source,powershell]
+----
+wsl --install -d Ubuntu
+----
+
+Then, inside the Ubuntu shell:
+
+[source,bash]
+----
+sudo apt update && sudo apt install -y make openjdk-21-jdk
+git clone <repo-url> ~/rentez && cd ~/rentez
+make check
+----
+
+In menu:Docker Desktop[Settings > Resources > WSL Integration], enable your
+Ubuntu distribution. Docker Desktop then serves the same daemon to both
+Windows and WSL2, so there is nothing to install twice.
+
+[IMPORTANT]
+====
+*Clone into the WSL filesystem (`~/rentez`), never into `/mnt/c/...`.*
+
+`docker-compose.yml` bind-mounts `./frontend`, `./db/init` and
+`scripts/gateway.conf` into containers. Bind mounts that cross the Windows
+filesystem boundary go through a translation layer, and the effect is not
+subtle: Vite's file watcher can take seconds to notice a save, and a Maven build
+that takes 40 seconds in `~` can take several minutes under `/mnt/c`.
+
+People usually conclude the project is slow rather than that the path is wrong.
+====
+
+==== What works without WSL2
+
+If you cannot enable WSL2 — some managed laptops forbid it — you can still do
+most things, with two gaps:
+
+[cols="3,2,3",options="header"]
+|===
+| | Native Windows | Needs a shell
+
+| The stack itself
+| Yes — `docker compose` works from PowerShell. Use <<raw-compose>>, which maps
+  every `make` target to its plain Compose equivalent
+| —
+
+| Building and testing services
+| Yes — `mvnw.cmd` is committed alongside `mvnw`
+| —
+
+| `make`
+| Not installed by default. `winget install ezwinports.make` if you want it
+| —
+
+| `scripts/smoke.sh` and everything in `aws/scripts/`
+| No
+| Git Bash runs them; WSL2 is better because `make` works too
+
+| `aws`, `kubectl`, `helm`, `eksctl`
+| Yes, all four ship native Windows builds
+| —
+|===
+
+The honest summary: PowerShell alone gets you a running stack, but not the
+end-to-end smoke test and not the AWS tooling. Git Bash closes the first gap.
+WSL2 closes both and is the only option that gives every teammate an identical
+environment, which is worth more than it sounds when a bug will not reproduce.
+
+NOTE: A root `.gitattributes` forces LF line endings on every shell script, the
+`Makefile`, the SQL and the YAML. Without it, Git for Windows' default
+`core.autocrlf=true` checks those files out with CRLF and bash fails with
+`$'\r': command not found` — an error that mentions neither Windows nor line
+endings. If you hit it anyway, your clone predates that file: run
+`git rm --cached -r . && git reset --hard` to re-checkout with the rules applied.
 
 [[modes]]
 == The two development modes
@@ -184,8 +272,8 @@ You will spend most of your time in *Mode A*.
 | `make up`
 
 | What runs in Docker
-| MySQL, DynamoDB Local, Adminer, gateway
-| All of the above plus four services and the frontend
+| Postgres, DynamoDB Local, Adminer, gateway
+| All of the above plus five services and the frontend
 
 | Where services run
 | From IntelliJ — btn:[Run] or btn:[Debug]
@@ -213,11 +301,16 @@ to `localhost`:
 
 [source,properties]
 ----
-spring.datasource.url=jdbc:mysql://${DB_HOST:localhost}:3306/rentez_fleet
+spring.datasource.url=jdbc:postgresql://${DB_HOST:localhost}:5432/rentez
 ----
 
-Docker Compose overrides `DB_HOST=mysql`; your IDE uses the default. *One
+Docker Compose overrides `DB_HOST=postgres`; your IDE uses the default. *One
 properties file, both modes, no Spring profiles to remember.*
+
+Note the URL names the *database*, `rentez`, and not a schema. Which of the five
+schemas a service sees is decided by its role's `search_path`, set once in
+`db/init/01-schemas.sql` — so every service shares one connection URL and only
+`DB_USER` differs.
 
 TIP: In IntelliJ, create one Run Configuration per service once, then use
 menu:Run[Run... > Edit Configurations > Compound] to launch several at once.
@@ -226,16 +319,26 @@ menu:Run[Run... > Edit Configurations > Compound] to launch several at once.
 
 === One instance, five schemas
 
-RentEZ uses *a single MySQL 8.0 instance hosting five independent schemas* —
+RentEZ uses *a single PostgreSQL 16 instance hosting five independent schemas* —
 locally in Docker, and on AWS as one `db.t4g.micro` RDS instance. This matches
 PRD §2.1 and costs the same as one schema, because RDS bills the instance, not
-the databases on it.
+what is inside it.
 
 [NOTE]
 ====
-In MySQL, `SCHEMA` and `DATABASE` are *synonyms*. "Five schemas" means five
-`CREATE DATABASE` statements. There is no `currentSchema=` URL parameter as
-there is in PostgreSQL — the schema name goes directly in the JDBC path.
+*This project used to run MySQL, and the port is worth understanding.* In MySQL,
+`SCHEMA` and `DATABASE` are synonyms, so "five schemas" was five `CREATE
+DATABASE` statements and each service's JDBC URL named its own. Postgres
+separates the two: there is *one database, `rentez`*, holding *five schemas*
+inside it, each owned by its own login role.
+
+The schema is the better unit. A role cannot cross a schema boundary without an
+explicit `GRANT`, but every service still shares one instance and one pool —
+which is what keeps the connection arithmetic in the architecture doc tractable.
+Two things also got simpler in the move: `payment` enforces "at most one
+successful payment per booking" with a real partial unique index instead of the
+`STORED` generated column MySQL needed to fake one, and `outbox_event.payload`
+is `JSONB`.
 ====
 
 [cols="2,2,2,2",options="header"]
@@ -290,55 +393,55 @@ its own database instance with *no schema change* — only a connection string.
 
 === The initialisation script
 
-`db/init/01-schemas.sql` creates all five schemas, all five users and their
+`db/init/01-schemas.sql` creates all five roles, all five schemas and their
 grants. It is idempotent, so re-running is harmless.
 
 [source,sql]
 ----
 -- rentez_startup_project_v1_1_20260810_1421SGT
--- One MySQL instance, five schemas, five users. Idempotent.
+-- One Postgres database, five schemas, five roles. Idempotent.
+-- Abridged — see the file itself for the full commentary.
 
-CREATE DATABASE IF NOT EXISTS rentez_auth
-  CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
-CREATE DATABASE IF NOT EXISTS rentez_fleet
-  CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
-CREATE DATABASE IF NOT EXISTS rentez_booking
-  CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
-CREATE DATABASE IF NOT EXISTS rentez_payment
-  CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
-CREATE DATABASE IF NOT EXISTS rentez_notification
-  CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+-- Postgres has no CREATE ROLE ... IF NOT EXISTS, hence the DO block.
+DO $$ BEGIN
+    CREATE ROLE auth_user LOGIN PASSWORD 'auth_pw';
+EXCEPTION WHEN duplicate_object THEN RAISE NOTICE 'role auth_user already exists';
+END $$;
+-- ... and the same for fleet_user, booking_user, payment_user, notification_user.
 
--- DDL privileges are included because Flyway runs migrations as these users.
-CREATE USER IF NOT EXISTS 'auth_user'@'%' IDENTIFIED BY 'auth_pw';
-GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES
-  ON rentez_auth.* TO 'auth_user'@'%';
+-- AUTHORIZATION makes the role the schema OWNER, which is what lets Flyway run
+-- DDL as that role with no further GRANTs. It is also what denies everyone
+-- else: a non-owner has no USAGE on the schema unless it is granted, and
+-- nothing here grants it. That omission IS the service boundary.
+CREATE SCHEMA IF NOT EXISTS rentez_auth         AUTHORIZATION auth_user;
+CREATE SCHEMA IF NOT EXISTS rentez_fleet        AUTHORIZATION fleet_user;
+CREATE SCHEMA IF NOT EXISTS rentez_booking      AUTHORIZATION booking_user;
+CREATE SCHEMA IF NOT EXISTS rentez_payment      AUTHORIZATION payment_user;
+CREATE SCHEMA IF NOT EXISTS rentez_notification AUTHORIZATION notification_user;
 
-CREATE USER IF NOT EXISTS 'fleet_user'@'%' IDENTIFIED BY 'fleet_pw';
-GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES
-  ON rentez_fleet.* TO 'fleet_user'@'%';
+-- So an unqualified CREATE TABLE from Flyway lands in the right schema, and an
+-- unqualified SELECT from Hibernate finds it again. This is what lets
+-- spring.flyway.schemas stay unset in every application.properties.
+ALTER ROLE auth_user         SET search_path = rentez_auth;
+ALTER ROLE fleet_user        SET search_path = rentez_fleet;
+ALTER ROLE booking_user      SET search_path = rentez_booking;
+ALTER ROLE payment_user      SET search_path = rentez_payment;
+ALTER ROLE notification_user SET search_path = rentez_notification;
 
-CREATE USER IF NOT EXISTS 'booking_user'@'%' IDENTIFIED BY 'booking_pw';
-GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES
-  ON rentez_booking.* TO 'booking_user'@'%';
-
-CREATE USER IF NOT EXISTS 'payment_user'@'%' IDENTIFIED BY 'payment_pw';
-GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES
-  ON rentez_payment.* TO 'payment_user'@'%';
-
-CREATE USER IF NOT EXISTS 'notification_user'@'%' IDENTIFIED BY 'notification_pw';
-GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES
-  ON rentez_notification.* TO 'notification_user'@'%';
-
-FLUSH PRIVILEGES;
+-- Postgres grants CONNECT to PUBLIC by default. Revoking and granting back
+-- explicitly means the list of who can reach this database is exactly this list.
+REVOKE ALL ON DATABASE rentez FROM PUBLIC;
+GRANT CONNECT ON DATABASE rentez
+  TO auth_user, fleet_user, booking_user, payment_user, notification_user;
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
 ----
 
-Docker mounts this into `/docker-entrypoint-initdb.d/`, where MySQL runs it
+Docker mounts this into `/docker-entrypoint-initdb.d/`, where Postgres runs it
 *once*, on first boot of an empty data volume.
 
 [IMPORTANT]
 ====
-Editing `01-schemas.sql` after the volume exists has *no effect* — MySQL only
+Editing `01-schemas.sql` after the volume exists has *no effect* — Postgres only
 runs the directory on an empty data directory. To re-apply it:
 
 [source,bash]
@@ -386,9 +489,10 @@ cp .env.example .env
 # rentez_startup_project_v1_1_20260810_1421SGT
 # Local development only. Nothing here is a real credential.
 
-MYSQL_ROOT_PASSWORD=rentez
-MYSQL_HOST=localhost
-MYSQL_PORT=3306
+POSTGRES_PASSWORD=rentez
+POSTGRES_DB=rentez
+POSTGRES_PORT=5432
+DB_PORT=5432
 
 AUTH_DB_PASSWORD=auth_pw
 FLEET_DB_PASSWORD=fleet_pw
@@ -432,14 +536,14 @@ Open http://localhost:8090 and sign in:
 |===
 | Field | Value
 
-| System   | MySQL
-| Server   | `mysql` (or `localhost` if you started only `make infra`)
+| System   | PostgreSQL
+| Server   | `postgres` (or `localhost` if you started only `make infra`)
 | Username | `auth_user`, `fleet_user`, `booking_user` …
 | Password | from `.env`
-| Database | the matching schema
+| Database | `rentez` — then pick the matching schema in the left-hand pane
 |===
 
-Log in as one service's user and try to browse another's schema. It will not
+Log in as one service's role and try to browse another's schema. It will not
 appear. That is the isolation working.
 
 === `make db-check` — the fast one
@@ -464,7 +568,7 @@ curl -s http://localhost:8083/actuator/health | jq .components.db
 ----
 {
   "status": "UP",
-  "details": { "database": "MySQL", "validationQuery": "isValid()" }
+  "details": { "database": "PostgreSQL", "validationQuery": "isValid()" }
 }
 ----
 
@@ -487,14 +591,24 @@ fails readiness, never joins the load balancer, and the deployment appears to
 hang for no visible reason.
 ====
 
-=== The MySQL client — the definitive one
+=== The psql client — the definitive one
 
 [source,bash]
 ----
-docker compose exec mysql mysql -ufleet_user -pfleet_pw -e "SHOW DATABASES;"
+docker compose exec -e PGPASSWORD=fleet_pw postgres \
+  psql -U fleet_user -d rentez -c "\\dt"
 ----
 
-Only `rentez_fleet` and `information_schema` should be listed.
+`\dt` lists the tables on the role's `search_path`, so only `rentez_fleet`'s
+tables appear. Reaching across the boundary is the more useful demonstration,
+and `make db-isolation` runs it for you:
+
+[source,bash]
+----
+docker compose exec -e PGPASSWORD=auth_pw postgres \
+  psql -U auth_user -d rentez -c "SELECT COUNT(*) FROM rentez_booking.booking;"
+# ERROR:  permission denied for schema rentez_booking
+----
 
 == Running the tests
 
@@ -516,7 +630,7 @@ Three tiers, roughly in the proportion you should write them:
 | Integration | `@SpringBootTest` + Testcontainers | ~10 s | Controllers end to end, wiring
 |===
 
-Tests get a *real MySQL* from Testcontainers, not H2:
+Tests get a *real PostgreSQL* from Testcontainers, not H2:
 
 [source,java]
 ----
@@ -526,7 +640,7 @@ class CatalogServiceApplicationTests {
 
     @Container
     @ServiceConnection                       // <1>
-    static MySQLContainer<?> db = new MySQLContainer<>("mysql:8.0");
+    static PostgreSQLContainer db = new PostgreSQLContainer("postgres:16-alpine");
 
     @Test
     void contextLoads() { }
@@ -537,10 +651,12 @@ class CatalogServiceApplicationTests {
 
 [WARNING]
 ====
-*Do not use H2, even in "MySQL compatibility mode".* It diverges from real
-MySQL on exactly the things this project uses — `JSON` columns, `ON DUPLICATE
-KEY UPDATE`, `CHECK` constraints, unsigned integers. Tests that pass against H2
-and fail against RDS are worse than no tests.
+*Do not use H2, even in "PostgreSQL compatibility mode".* It diverges from real
+Postgres on exactly the things this project uses — `JSONB` columns, partial
+unique indexes, identity columns, `CHECK` constraints. Tests that pass against
+H2 and fail against RDS are worse than no tests. This codebase has already paid
+for that lesson once: `car.model_year` is named that way only because `year` is
+reserved in H2.
 
 Testcontainers costs about 40 seconds on first run, then caches. Docker must be
 running — it is available on GitHub's `ubuntu-latest` runners too.
@@ -565,7 +681,8 @@ nothing.
 | `make db-check` | Verify every service's database connection
 | `make test`     | Run all backend tests
 | `make logs S=catalog-service` | Tail one service's logs
-| `make psql` / `make mysql`    | Open a SQL shell as root
+| `make psql`                   | Open a psql shell as the superuser
+| `make db-isolation`           | Prove one service's role cannot read another's schema
 |===
 
 == Repository status
@@ -699,11 +816,15 @@ Docker Desktop is not running. On Colima, export
 
 Port already allocated::
 Something else holds the port — often a previously started stack.
-`docker compose down` then retry, or `lsof -i :3306` to find the culprit.
+`docker compose down` then retry, or `lsof -i :5432` to find the culprit. Every
+host-side port is overridable in `.env` — set `POSTGRES_PORT=5433` and
+`DB_PORT=5433` together, so Mode A in IntelliJ follows the move.
 
 Frontend loads but every API call fails::
-Check `VITE_API_BASE_URL` points at `http://localhost:8080` (the gateway), not
-a service port, and that the gateway container is healthy.
+API calls are *relative* — the app requests `/api/…` with no host, and Vite's
+dev-server proxy forwards them to the gateway. Check the gateway container is
+healthy, and see the note in `frontend/vite.config.js` for why the production
+build has no base URL baked into it either.
 
 == Conventions worth knowing on day one
 
@@ -719,11 +840,17 @@ a service port, and that the gateway container is healthy.
   history.
 * *Never expose an internal `BIGINT` primary key* in an API response or URL.
   Public identifiers are ULIDs — see PRD §2.2.
-* *Cap the connection pool.* `spring.datasource.hikari.maximum-pool-size=5`.
-  On AWS, `db.t4g.micro` allows roughly 85 connections; ten booking pods at the
-  default pool of 10 would exhaust it at exactly the moment the autoscaler
-  starts working, and the load test would look like a scaling failure when it
-  is a configuration failure.
+* *Cap the connection pool.* `spring.datasource.hikari.maximum-pool-size=3`.
+  On AWS, `db.t4g.micro` running Postgres allows roughly 112 connections
+  (`max_connections` is `LEAST(DBInstanceClassMemory/9531392, 5000)`), three of
+  them reserved for superusers. Twenty-five pods at full scale-out with a pool
+  of 5 want 125 and would exhaust it at exactly the moment the autoscaler starts
+  working — the load test would look like a scaling failure when it is a
+  configuration failure. A pool of 3 wants 75, comfortably inside.
+  +
+  Note the local Postgres container is started with `max_connections=200`, which
+  is deliberately *more* than RDS allows, so this failure cannot reproduce on
+  your laptop.
 
 == Where to go next
 
@@ -751,7 +878,7 @@ _Update this stamp and the change table below on every revision._
 
 | v1.0
 | 2026-08-10 13:33
-| Initial developer startup guide: two development modes, one MySQL instance
+| Initial developer startup guide: two development modes, one database instance
   with five schemas and per-service users, DynamoDB Local, four ways to verify
   a database connection, testing tiers, and the three defects blocking
   adoption.

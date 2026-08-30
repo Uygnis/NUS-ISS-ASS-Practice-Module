@@ -11,12 +11,20 @@ on:
 
   workflow_dispatch:
 
+# See dev.yml: id-token rather than packages, and it must be granted here
+# because a called workflow does not inherit the caller's permissions.
 permissions:
   contents: read
-  packages: write
+  id-token: write
 
 jobs:
   deploy:
+    # THIS GUARD WAS MISSING. `workflow_run` fires on completion, not on
+    # success, so without it a RED CI run deployed to production anyway — the
+    # one place that must never happen. dev.yml always had it; prod.yml did not.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     uses: ./.github/workflows/deploy.yml
     with:
       environment: prod

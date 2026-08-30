@@ -14,6 +14,7 @@ Built for the NUS-ISS Advanced Software Architecture practice module.
 - [Architecture](#architecture)
 - [Quick start](#quick-start)
 - [The services](#the-services)
+- [Deployment](#deployment)
 - [API surface](#api-surface)
 - [Design decisions worth knowing](#design-decisions-worth-knowing)
 - [Repository layout](#repository-layout)
@@ -40,7 +41,7 @@ Car rental is deceptively hard because a car is a *physical* thing that exists o
 
 The interesting constraint is that these services own separate schemas and cannot see each other's tables. Every problem below comes from that, and this codebase is largely an argument about how to handle them:
 
-- **No cross-service joins.** A booking cannot `JOIN` a user or a car. Data is either snapshotted at write time or fetched through the owning service's API — never read out of another schema. MySQL grants enforce this: `make db-isolation` proves `auth_user` cannot read `rentez_booking`.
+- **No cross-service joins.** A booking cannot `JOIN` a user or a car. Data is either snapshotted at write time or fetched through the owning service's API — never read out of another schema. PostgreSQL grants enforce this: `make db-isolation` proves `auth_user` cannot read `rentez_booking`.
 - **No distributed transactions.** Taking payment and confirming a booking are two systems. Correctness comes from idempotent operations plus compensation, not from a transaction manager.
 - **Networks fail halfway.** Any call can succeed, fail, or *time out having actually worked*. Every write that crosses a service is safe to retry, and duplicates are absorbed by unique constraints rather than avoided by hope.
 - **Cycles are fatal.** Two services that call each other cannot be built, tested or deployed independently. Availability search deliberately lives in reservation, not catalog, to keep the dependency one-directional.
@@ -82,7 +83,7 @@ Solid arrows are synchronous calls on the request path. Dashed arrows are either
 
 **Nothing calls account-service at runtime.** Every service validates JWTs locally against a shared secret, so identity never becomes a bottleneck or a single point of failure. That is also what makes account-service a safe place to host the admin dashboard: a service with no inbound dependencies cannot create a cycle by fanning out.
 
-One MySQL instance hosts five schemas, each with its own user and no cross-schema grants — the same shape as production, where it is one RDS instance. Any service could be moved to its own database with a connection-string change and no schema change.
+One PostgreSQL instance hosts five schemas, each with its own role and no cross-schema grants — the same shape as production, where it is one RDS instance. Any service could be moved to its own database with a connection-string change and no schema change.
 
 ---
 
@@ -129,12 +130,12 @@ Demo accounts (local only — they exist because the `seed` profile is active, w
 
 | | `make infra` | `make up` |
 |---|---|---|
-| In Docker | MySQL, DynamoDB, Adminer, gateway | the above + all five services |
+| In Docker | PostgreSQL, DynamoDB, Adminer, gateway | the above + all five services |
 | Services run | from your IDE, against `localhost` | in containers |
 | Restart after a change | under a second | ~40 s rebuild |
 | Use for | day-to-day development | integration testing, demos |
 
-Every datasource property defaults to `localhost`, and Compose overrides it with `DB_HOST=mysql`. One properties file, both modes, no Spring profiles to remember.
+Every datasource property defaults to `localhost`, and Compose overrides it with `DB_HOST=postgres`. One properties file, both modes, no Spring profiles to remember.
 
 | Endpoint | URL |
 |---|---|
@@ -156,7 +157,47 @@ Every datasource property defaults to `localhost`, and Compose overrides it with
 
 Catalog and notification have no outbound runtime dependencies at all, which means they can be built, tested and deployed entirely on their own.
 
-**Tech:** Spring Boot 4.1.0 · Java 21 · MySQL 8 · Flyway · Spring Security (OAuth2 resource server) · Testcontainers · nginx · Docker Compose.
+**Tech:** Spring Boot 4.1.0 · Java 21 · PostgreSQL 16 · Flyway · Spring Security (OAuth2 resource server) · Testcontainers · nginx · Docker Compose.
+
+In AWS the same five services run on EKS against RDS PostgreSQL — see [Deployment](#deployment).
+
+---
+
+## Deployment
+
+The same five services run on AWS: EKS behind one ALB, RDS PostgreSQL, and the
+React build on S3 behind CloudFront. CloudFront is the only public entry point —
+it serves the app at `/` and proxies `/api/*` to the ALB, so there is no CORS
+problem, no certificate to buy and no domain to register.
+
+The infrastructure splits into two layers with different lifetimes:
+
+| Layer | Contains | Cost | Created by |
+|---|---|---|---|
+| **Persistent** | VPC, CloudFront, S3, ECR, DynamoDB, SQS, SSM secrets, budgets | ~$0.80/month | `make aws-bootstrap` (once per account) |
+| **Ephemeral** | EKS cluster, node group, ALB, RDS | ~$0.21/hour | `make aws-up` (daily) |
+
+The ephemeral layer holds a **lease**. `make aws-up` writes a deadline to SSM and
+a Lambda tears everything down when it passes, so a forgotten cluster cannot
+become a $155 month.
+
+```bash
+make aws-status      # what is running, burn rate, who has it, time left
+make aws-up          # ~20 min, 4-hour lease
+make aws-deploy      # ~3 min, redeploy code only — no infrastructure
+make aws-down        # dump to S3, then destroy everything billed by the hour
+```
+
+`make aws-up` provisions; `make aws-deploy` deploys. That split is why a code
+change redeploys in three minutes instead of twenty, and why CI can deploy by
+running the same script rather than a reimplementation in YAML.
+
+| Document | What's in it |
+|---|---|
+| [`docs/architecture.md`](docs/architecture.md) | The AWS topology, cost layers, and why each piece is shaped that way |
+| [`docs/cicd-pipeline.md`](docs/cicd-pipeline.md) | The four workflows, five stages, and what a deploy actually does |
+| [`docs/aws-team-setup.md`](docs/aws-team-setup.md) | SOP for giving teammates access to the shared account |
+| [`aws/README.md`](aws/README.md) | Operational detail: teardown, backups, troubleshooting |
 
 ---
 
@@ -252,10 +293,19 @@ services/            the five Spring Boot services
     security/        SecurityConfig, JWT
     error/           ApiException, GlobalExceptionHandler
   */src/main/resources/db/migration/   Flyway migrations
-frontend/            React + Vite (see Known gaps)
-db/init/             schema and user provisioning, runs once on first boot
+frontend/            React + Vite + React Router — pages, components, styles
+db/init/             schema and role provisioning, runs once on first boot
 scripts/             gateway.conf, init-dynamodb.sh, smoke.sh
-docs/                architecture chapters
+deploy/
+  helm/rentez-service/   one chart, installed five times
+  helm/values/           per-service values (path, DB role, HPA range)
+  k8s/                   internal-path deny rule
+aws/
+  cloudformation/    guardrails, persistent layer, database
+  eksctl/            cluster definition
+  scripts/           aws-up, aws-deploy, aws-down, aws-status, ...
+  iam/               CI deploy policy
+docs/                architecture chapters + operations references
 ```
 
 Each service is a standalone Maven project with its own wrapper. There is deliberately **no shared library** and no parent POM: every service's Docker build context is its own directory and runs `mvn dependency:go-offline` against Maven Central, so a sibling `org.rentez` artifact would be invisible to the image build. A small amount of duplication buys independent buildability.
@@ -275,7 +325,11 @@ SPRING_PROFILES_ACTIVE=seed make up
 
 ### Branching
 
-Work happens on `feature/*` branches, roughly one per service (`feature/account`, `feature/catalog`, `feature/car-reservation`, `feature/notification`). `.github/workflows/sync-main.yml` automatically opens sync PRs from `main` into every feature branch **with auto-merge enabled**, so your branch stays current without you doing anything — and changes on `main` land in your branch without warning. Worth knowing before you wonder where a commit came from.
+Three branch types: `main` is production, `dev` is integration, `feature/**` is where work happens. Branch from `dev`, PR back into `dev`, and release by PR from `dev` into `main`.
+
+`.github/workflows/sync-main.yml` automatically opens sync PRs from `main` into every open feature branch **with auto-merge enabled**, so your branch stays current without you doing anything — and changes on `main` land in your branch without warning. Worth knowing before you wonder where a commit came from.
+
+Full detail: [`docs/branching-strategy.md`](docs/branching-strategy.md).
 
 ### Before you open a PR
 
@@ -285,7 +339,9 @@ make test-backend                         # all 70 tests, if you touched shared 
 ./scripts/smoke.sh                        # if you changed an endpoint or the gateway
 ```
 
-CI runs four jobs on every push: `frontend` (Node 22), `backend` (a matrix over all five services on Java 21), `sast` (CodeQL) and `dependency-check` (OWASP). `.github/CODEOWNERS` assigns reviewers automatically — services and frontend to `@sayoungestguy`, infrastructure and workflows to `@Uygnis`.
+`Rentez CI` runs four jobs on every push to `main`, `dev` and `feature/**`: `frontend` (Node 22), `backend` (a matrix over all five services on Java 21), `sast` (CodeQL) and `dependency-check` (OWASP). On success, merges to `dev` or `main` trigger a deploy — see [`docs/cicd-pipeline.md`](docs/cicd-pipeline.md).
+
+`.github/CODEOWNERS` assigns reviewers automatically — services and frontend to `@sayoungestguy`, infrastructure and workflows to `@Uygnis`.
 
 ### Conventions that are not negotiable
 
@@ -302,7 +358,7 @@ These are the ones where breaking them fails quietly rather than loudly:
 
 ### Testing
 
-Tests run against a **real MySQL 8 container** via Testcontainers — not H2. H2 diverges from MySQL on reserved words and JSON handling, and this project has already been bitten by it (`car.model_year` exists because `year` is reserved in H2). It is also the only place Flyway migrations execute and Hibernate validates entities against them.
+Tests run against a **real PostgreSQL 16 container** via Testcontainers — not H2. H2 diverges from PostgreSQL on reserved words and JSON handling, and this project has already been bitten by it (`car.model_year` exists because `year` is reserved in H2). It is also the only place Flyway migrations execute and Hibernate validates entities against them.
 
 Two things to know when writing tests:
 
@@ -322,22 +378,34 @@ Two things to know when writing tests:
 
 | Area | What's needed |
 |---|---|
-| **Frontend** | It is still the stock Vite template — no API client, no auth handling, no router. Every backend endpoint is documented and working; the UI is wide open. |
 | **ULID public identifiers** | `docs/ch02` specifies a `public_id` on every business entity so customers cannot enumerate bookings by incrementing a URL. Currently `BIGINT` ids are exposed. |
 | **DynamoDB** | `rentez-sessions`, `rentez-availability` and `rentez-audit` are provisioned but unused. Sessions would enable real token revocation; today a disabled account keeps access until its token expires. |
 | **Refresh tokens** | 15-minute expiry with no refresh means re-login. |
 | **Messaging** | The outbox is broker-ready but delivers over HTTP. Swapping in SQS touches the relay's sink only. |
 | **Stranded payments** | `INITIATED` rows are not swept automatically — resolving one means asking the provider what happened, which the mock gateway cannot answer. |
+| **CloudFront masks API 404s** | The distribution rewrites 403/404 to `/index.html` with status 200 for React deep-linking, and that applies to `/api/*` too. A missing record returns HTML with a 200, so `res.ok` is true and JSON parsing then fails. Needs a CloudFront Function or an `/api/*`-scoped behaviour. |
 
 ---
 
 ## Where to go next
+
+**Building and running locally**
 
 | Document | What's in it |
 |---|---|
 | [`docs/ch01.startup-project.adoc`](docs/ch01.startup-project.adoc) | Development modes, ports, configuration, testing strategy, day-one conventions |
 | [`docs/ch02.database-schema.adoc`](docs/ch02.database-schema.adoc) | The full target schema — 30+ tables, conventions for money, time, soft deletes and identifiers |
 | [`docs/ch03.verifying-the-services.adoc`](docs/ch03.verifying-the-services.adoc) | Running it, verifying it, and demonstrating the failure modes |
+
+**Architecture and operations**
+
+| Document | What's in it |
+|---|---|
+| [`docs/architecture.md`](docs/architecture.md) | AWS topology, request path, persistent vs ephemeral layers |
+| [`docs/branching-strategy.md`](docs/branching-strategy.md) | Branch types, rules, lifecycle, automatic sync |
+| [`docs/cicd-pipeline.md`](docs/cicd-pipeline.md) | Workflows, stages, design decisions, expected failures |
+| [`docs/aws-team-setup.md`](docs/aws-team-setup.md) | SOP for shared-account access, daily commands, troubleshooting |
+| [`aws/README.md`](aws/README.md) | Cost model, teardown, backups, things that will bite |
 
 Useful commands:
 
