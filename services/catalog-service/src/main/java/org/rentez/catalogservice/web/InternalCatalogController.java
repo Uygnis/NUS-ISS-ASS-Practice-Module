@@ -25,7 +25,7 @@ import java.util.List;
  */
 @RestController
 @RequestMapping("/api/catalog/internal")
-@PreAuthorize("hasRole('SERVICE')")
+@PreAuthorize("hasRole('STAFF')")
 public class InternalCatalogController {
 
 	private final CarService carService;

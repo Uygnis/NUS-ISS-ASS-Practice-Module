@@ -132,6 +132,11 @@
             <artifactId>spring-boot-starter-restclient-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>3.1.0</version>
+        </dependency>
 
         <!-- Tests run against a real PostgreSQL 16 container via @ServiceConnection.
              Without this, @SpringBootTest has no database: Hibernate opens a JDBC

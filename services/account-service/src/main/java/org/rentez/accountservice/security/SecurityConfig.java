@@ -78,7 +78,7 @@ public class SecurityConfig {
 				.csrf(csrf -> csrf.disable())
 				.sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
 				.authorizeHttpRequests(auth -> auth
-						.requestMatchers("/api/accounts/auth/**").permitAll()
+						.requestMatchers("/api/accounts/auth/**","/swagger-ui/**","/swagger-ui.html","/v3/api-docs/**").permitAll()
 						.requestMatchers("/actuator/health/**", "/actuator/info").permitAll()
 						// Second half of the /internal control. The gateway already
 						// 404s these, but compose publishes 8081-8085 on the host, so

@@ -58,7 +58,11 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
 		</dependency>
-
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>3.1.0</version>
+        </dependency>
 		<!-- Flyway owns the schema (ddl-auto=validate). Three artifacts, all required:
 		     - spring-boot-flyway  Boot 4 moved FlywayAutoConfiguration out of
 		       spring-boot-autoconfigure into its own module. Without it Flyway sits on

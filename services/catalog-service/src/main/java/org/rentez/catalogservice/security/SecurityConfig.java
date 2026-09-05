@@ -59,11 +59,11 @@ public class SecurityConfig {
 						// where GET /api/cars/** was permitAll. Note this must be
 						// declared before the /internal rule would otherwise match.
 						.requestMatchers(HttpMethod.GET, "/api/catalog/cars", "/api/catalog/cars/*").permitAll()
-						.requestMatchers("/actuator/health/**", "/actuator/info").permitAll()
+						.requestMatchers("/actuator/health/**", "/actuator/info","/swagger-ui/**","/swagger-ui.html","/v3/api-docs/**").permitAll()
 						// Service-to-service only. The gateway already 404s these, but
 						// compose publishes 8081-8085 on the host, so a local process
 						// can reach this service directly and bypass it entirely.
-						.requestMatchers("/api/catalog/internal/**").hasRole("SERVICE")
+						.requestMatchers("/api/catalog/internal/**").hasRole("STAFF")
 						.anyRequest().authenticated())
 				.oauth2ResourceServer(oauth -> oauth.jwt(jwt -> jwt.jwtAuthenticationConverter(converter)));
 
