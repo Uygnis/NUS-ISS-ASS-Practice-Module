@@ -63,7 +63,7 @@ public class SecurityConfig {
 						// Service-to-service only. The gateway already 404s these, but
 						// compose publishes 8081-8085 on the host, so a local process
 						// can reach this service directly and bypass it entirely.
-						.requestMatchers("/api/catalog/internal/**").hasRole("STAFF")
+						.requestMatchers("/api/catalog/internal/**").hasRole("SERVICE")
 						.anyRequest().authenticated())
 				.oauth2ResourceServer(oauth -> oauth.jwt(jwt -> jwt.jwtAuthenticationConverter(converter)));
 
