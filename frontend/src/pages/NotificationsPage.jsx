@@ -1,30 +1,64 @@
-import '../styles/HomePage.css'
-import '../styles/NotificationsPage.css'
-import TopNav from '../components/TopNav.jsx'
+import { useEffect, useState } from 'react';
+import { useApi } from '../api/useApi';
+import { Message, Empty } from '../components/ui';
 
-export default function NotificationsPage({ onLogout }) {
+export default function NotificationsPage() {
+  const api = useApi();
+  const [list, setList] = useState(null);
+  const [err, setErr] = useState('');
+
+  async function load() {
+    setErr('');
+    try {
+      const notifications = await api.notifications.mine();
+      setList(notifications);
+    } catch (e) {
+      setErr(e.message);
+    }
+  }
+
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  async function markRead(id) {
+    try {
+      await api.notifications.markRead(id);
+      load();
+    } catch (e) {
+      setErr(e.message);
+    }
+  }
+
   return (
-    <div className="page-shell notifications-page">
-      <TopNav onLogout={onLogout} />
-      <main className="page-main">
-        <section className="hero-card notifications-card">
-          <div className="hero-copy">
-            <p className="eyebrow">NOTIFICATIONS</p>
-            <h1>Notification centre</h1>
-            <p className="hero-description">Your notifications will appear here once they arrive.</p>
-          </div>
-          <div className="hero-panels">
-            <div className="hero-panel">
-              <h2>No new alerts</h2>
-              <p>Check back later for the latest updates and reservation notices.</p>
+    <div className="panel">
+      <h2>Notifications</h2>
+      <div className="row" style={{ marginBottom: 14 }}>
+        <button className="small" onClick={load}>Refresh</button>
+      </div>
+      <Message text={err} kind="err" />
+      {list === null ? (
+        <div className="hint">Loading…</div>
+      ) : list.length === 0 ? (
+        <Empty>No notifications yet.</Empty>
+      ) : (
+        list.map((n) => (
+          <div className="panel" key={n.id} style={{ marginBottom: 10, opacity: n.read ? 0.6 : 1 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+              <div>
+                <strong>{n.type || 'Notification'}</strong>
+                <div>{n.message}</div>
+                <div className="hint">
+                  {n.relatedEntityType ? `${n.relatedEntityType} #${n.relatedEntityId} · ` : ''}{n.sentAt}
+                </div>
+              </div>
+              <div>
+                {n.read
+                  ? <span className="status-pill st-neu">READ</span>
+                  : <button className="small" onClick={() => markRead(n.id)}>Mark read</button>}
+              </div>
             </div>
-            <div className="hero-panel hero-panel-emphasis">
-              <h2>Tips</h2>
-              <p>Use the navigation buttons above to manage reservations and profile settings.</p>
-            </div>
           </div>
-        </section>
-      </main>
+        ))
+      )}
     </div>
-  )
+  );
 }

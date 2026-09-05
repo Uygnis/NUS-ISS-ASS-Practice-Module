@@ -1,16 +1,47 @@
-# React + Vite
+# RentEz Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + Vite single-page app for the RentEz car rental platform. Talks
+to the five backend services through the gateway
 
-Currently, two official plugins are available:
+Gateway service must allow CORS from wherever this frontend is served,
+since all requests are made client-side.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Run locally (dev server)
 
-## React Compiler
+```bash
+npm install
+npm run dev
+```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Opens on http://localhost:3000 with hot reload.
 
-## Expanding the ESLint configuration
+## Build for production
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+```bash
+npm install
+npm run build   # outputs static assets to dist/
+npm run preview # serve the production build locally on :3000
+```
+
+## Run with Docker
+
+```bash
+docker build -t rentez-frontend .
+docker run -p 8080:80 rentez-frontend
+```
+
+The app is then served at http://localhost:8080.
+
+## Configuring backend URLs
+
+Default URLs live in `public/config.js`, loaded at runtime
+
+## Notes
+
+- Auth uses a JWT returned by the accounts service's login/register
+  endpoints, stored in local storage so a page refresh doesn't sign you out.
+  For production hardening, consider moving to httpOnly cookies issued by
+  the backend instead.
+- Roles (`CUSTOMER`, `STAFF`, `ADMIN`) control which tabs and routes are
+  visible/reachable; the backend should still enforce authorization
+  independently, since this is a client-side check only.
