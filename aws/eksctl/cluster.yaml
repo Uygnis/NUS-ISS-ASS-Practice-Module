@@ -1,0 +1,197 @@
+# RentEZ — EKS cluster definition.
+#
+# THIS IS STILL CLOUDFORMATION. eksctl does not talk to the EKS API directly; it
+# generates CloudFormation stacks (eksctl-rentez-cluster,
+# eksctl-rentez-nodegroup-*) and deletes them again on `eksctl delete cluster`.
+# So the "CloudFormation, not Terraform" decision holds, and we avoid several
+# hundred lines of hand-written EKS, IRSA and launch-template YAML.
+#
+# This file is a TEMPLATE. `make aws-up` runs it through envsubst to fill in
+# ${AWS_REGION} and the subnet IDs exported by the persistent stack, because
+# eksctl has no equivalent of CloudFormation's ImportValue.
+#
+#   eksctl create cluster -f <(envsubst < aws/eksctl/cluster.yaml)
+#
+# COST SHAPE
+#   control plane  $0.100/hr  - fixed, unavoidable, and the reason we destroy
+#                               rather than idle. There is no "stop" for EKS.
+#   2x t3.large    ~$0.066/hr - spot, about 70% off on-demand
+#   ALB            ~$0.023/hr - one, shared by all five ingresses
+# Roughly $0.19/hr with the database, so a three-hour working session costs less
+# than a coffee. A month of leaving it up costs about $155.
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: rentez
+  region: "${AWS_REGION}"
+  # 1.31+ so the in-tree cloud provider removals and the current AWS Load
+  # Balancer Controller are both settled. Pin it: an unpinned version means two
+  # teammates create structurally different clusters a fortnight apart.
+  version: "1.31"
+  tags:
+    Project: rentez
+    Layer: ephemeral
+    ManagedBy: eksctl
+    # Set from `caller_name` by make aws-up. On a shared account this is what
+    # makes "whose cluster is this" answerable without asking around.
+    Owner: "${OWNER}"
+
+# Explicit rather than inherited. `make aws-up` grants the CI deploy role access
+# with `eksctl create accessentry`, and access entries are simply ignored in
+# CONFIG_MAP mode — the command succeeds, the role still gets Unauthorized, and
+# nothing anywhere says why. CONFIG_MAP is kept alongside API because eksctl
+# still writes the node group's own identity into the aws-auth ConfigMap.
+accessConfig:
+  authenticationMode: API_AND_CONFIG_MAP
+
+# Reuse the VPC from the persistent stack rather than letting eksctl create one.
+# Two reasons, and the second is the expensive one:
+#
+#   1. RDS lives in that VPC's private subnets and must outlive the cluster.
+#   2. eksctl's default VPC includes a NAT GATEWAY, which is ~$43/month in
+#      ap-southeast-1 and bills whether or not traffic flows. Our nodes sit in
+#      public subnets with security groups instead. `make aws-nuke` is the only
+#      thing that removes this VPC.
+vpc:
+  id: "${VPC_ID}"
+  subnets:
+    public:
+      public-a: { id: "${PUBLIC_SUBNET_A}" }
+      public-b: { id: "${PUBLIC_SUBNET_B}" }
+    private:
+      private-a: { id: "${PRIVATE_SUBNET_A}" }
+      private-b: { id: "${PRIVATE_SUBNET_B}" }
+  # Public API endpoint. With no NAT gateway, nodes reach the control plane over
+  # the internet gateway, so a private-only endpoint would leave them unable to
+  # register. Access is still authenticated and authorised by IAM.
+  clusterEndpoints:
+    publicAccess: true
+    privateAccess: true
+
+iam:
+  # Required for IRSA. Without it the two service accounts below cannot assume
+  # their roles, the load balancer controller silently creates nothing, and
+  # `kubectl get ingress` shows an Ingress with no ADDRESS forever.
+  withOIDC: true
+  serviceAccounts:
+    - metadata:
+        name: aws-load-balancer-controller
+        namespace: kube-system
+      wellKnownPolicies:
+        awsLoadBalancerController: true
+    - metadata:
+        name: cluster-autoscaler
+        namespace: kube-system
+      wellKnownPolicies:
+        autoScaler: true
+    # Lets the five services read /rentez/* from SSM Parameter Store. Scoped to
+    # that prefix and to decrypting with the account default key - a pod that is
+    # compromised can read this project's config and nothing else in the account.
+    - metadata:
+        name: rentez-app
+        namespace: rentez
+      attachPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: [ssm:GetParameter, ssm:GetParameters, ssm:GetParametersByPath]
+            Resource: "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/rentez/*"
+          - Effect: Allow
+            Action: [kms:Decrypt]
+            Resource: "*"
+            Condition:
+              StringEquals:
+                kms:ViaService: "ssm.${AWS_REGION}.amazonaws.com"
+
+    # Used ONLY by the one-off dump and restore pods that `make aws-down` and
+    # `make aws-up` run. RDS lives in private subnets and is unreachable from a
+    # laptop, so the backup has to happen from inside the cluster - and the pod
+    # that does it needs to write to S3 itself, because streaming a multi-megabyte
+    # dump out through `kubectl logs` is not binary-safe and truncates silently.
+    #
+    # Deliberately a SEPARATE service account from rentez-app: the application
+    # pods have no business writing to the backup bucket, and a compromised
+    # service should not be able to overwrite the backups.
+    - metadata:
+        name: rentez-backup
+        namespace: rentez
+      attachPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: [s3:PutObject, s3:GetObject, s3:ListBucket]
+            Resource:
+              - "arn:aws:s3:::rentez-backups-${AWS_ACCOUNT_ID}"
+              - "arn:aws:s3:::rentez-backups-${AWS_ACCOUNT_ID}/*"
+
+managedNodeGroups:
+  - name: rentez-spot
+    # SPOT, not on-demand: roughly 70% cheaper, and every workload here is a
+    # stateless HTTP service behind a load balancer that Kubernetes will
+    # reschedule. The database is RDS, so an interrupted node loses nothing.
+    #
+    # An interruption during the graded load test would be visible in the
+    # results, though - if that matters on the day, run the load test with
+    # `spot: false` and say so in the report rather than explaining a cliff in
+    # the latency graph after the fact.
+    spot: true
+    # Several instance types so the scheduler can draw from several spot
+    # capacity pools. A single type is the most common cause of "spot capacity
+    # not available" at exactly the wrong moment.
+    instanceTypes: ["t3.large", "t3a.large", "m5.large", "m5a.large"]
+
+    # 2 to 5 nodes, matching the architecture doc. t3.large is 2 vCPU / 8 GiB;
+    # with pod requests of 256Mi/200m, two nodes hold the ten baseline pods
+    # comfortably and five hold the twenty-five the HPAs can reach.
+    desiredCapacity: 2
+    minSize: 2
+    maxSize: 5
+    volumeSize: 30
+    volumeType: gp3
+
+    # PUBLIC subnets, with public IPs. This is what removes the NAT gateway
+    # dependency and it is the single largest cost saving in the project. The
+    # protection is the security group, not the subnet: nothing reaches a node
+    # except the ALB, and the ALB accepts only CloudFront.
+    privateNetworking: false
+    subnets: [public-a, public-b]
+
+    # Cluster Autoscaler discovers groups it may resize by these exact tags.
+    # Misspell either and nodes never scale, with no error anywhere.
+    tags:
+      k8s.io/cluster-autoscaler/enabled: "true"
+      k8s.io/cluster-autoscaler/rentez: "owned"
+      Project: rentez
+      Owner: "${OWNER}"
+    iam:
+      withAddonPolicies:
+        # Pull images from ECR.
+        imageBuilder: true
+        autoScaler: true
+        cloudWatch: true
+
+    # No SSH. There is nothing on these nodes worth logging into, and an open
+    # port 22 on a public subnet is the one genuine risk this topology adds.
+    ssh:
+      allow: false
+
+addons:
+  - name: vpc-cni
+    version: latest
+  - name: coredns
+    version: latest
+  - name: kube-proxy
+    version: latest
+  # NOT installed: aws-ebs-csi-driver. Nothing here has a PersistentVolumeClaim
+  # because Postgres is on RDS. Installing it anyway costs nothing but adds two
+  # DaemonSet pods per node and a failure mode nobody will recognise.
+
+cloudWatch:
+  clusterLogging:
+    # Deliberately empty. Control-plane logging is billed at CloudWatch Logs
+    # ingestion rates (~$0.76/GB in ap-southeast-1) and the api and audit logs
+    # are chatty. Turn on ["api", "audit"] for the load test if you need the
+    # evidence, then turn it off again.
+    enableTypes: []

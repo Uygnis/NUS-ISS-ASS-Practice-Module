@@ -83,13 +83,12 @@ public class Payment {
 	@Column(name = "updated_at", nullable = false)
 	private Instant updatedAt = Instant.now();
 
-	/**
-	 * Read-only mirror of the generated column that enforces "at most one
-	 * successful payment per booking". Mapped so Hibernate's schema validation
-	 * accounts for it; never written from Java.
-	 */
-	@Column(name = "succeeded_booking_id", insertable = false, updatable = false)
-	private Long succeededBookingId;
+	// "At most one successful payment per booking" is enforced by the partial
+	// unique index uk_payment_success_booking, which Postgres evaluates directly
+	// from `status` and `booking_id`. There is deliberately no field here: the
+	// MySQL schema needed a STORED generated column to fake a partial index, and
+	// this class carried a read-only mirror of it purely so ddl-auto=validate
+	// would not trip over the extra column. Both are gone. See V1__init.sql.
 
 	protected Payment() {
 	}

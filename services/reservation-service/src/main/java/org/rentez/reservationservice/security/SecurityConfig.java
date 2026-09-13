@@ -59,7 +59,7 @@ public class SecurityConfig {
 						// GET /api/cars/**. You could window-shop without an account
 						// and you still can.
 						.requestMatchers(HttpMethod.GET, "/api/reservations/availability").permitAll()
-						.requestMatchers("/actuator/health/**", "/actuator/info").permitAll()
+						.requestMatchers("/actuator/health/**", "/actuator/info","/swagger-ui/**","/swagger-ui.html","/v3/api-docs/**").permitAll()
 						.requestMatchers("/api/reservations/internal/**").hasRole("SERVICE")
 						.anyRequest().authenticated())
 				.oauth2ResourceServer(oauth -> oauth.jwt(jwt -> jwt.jwtAuthenticationConverter(converter)));

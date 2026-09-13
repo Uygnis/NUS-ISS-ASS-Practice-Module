@@ -1,0 +1,64 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "rentez.name" . }}
+  labels: {{- include "rentez.labels" . | nindent 4 }}
+  annotations:
+    # ============================================================ ONE ALB
+    # group.name is the whole reason there is one load balancer and not five.
+    # Every Ingress carrying the same group joins a single ALB, which is what
+    # the architecture doc means by "ONE ALB · path routing · IngressGroup".
+    #
+    # Get this wrong and nothing fails: you simply get five ALBs and five times
+    # the ALB bill (~$16/month each), discovered at the end of the month.
+    alb.ingress.kubernetes.io/group.name: rentez
+    # Rule evaluation order within the group. The internal-deny Ingress in
+    # deploy/k8s/ claims 10-19, so the services start at 100 and leave room.
+    alb.ingress.kubernetes.io/group.order: "{{ .Values.ingress.order }}"
+
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    # ip mode targets pods directly rather than node ports, so the ALB sees pod
+    # readiness and stops sending traffic to a terminating pod on a reclaimed
+    # spot node. With instance mode it would keep hitting the node.
+    alb.ingress.kubernetes.io/target-type: ip
+
+    # The SAME health path Kubernetes uses. If these disagree the ALB can mark a
+    # target healthy that Kubernetes considers unready, and requests land on a
+    # pod whose datasource is not up.
+    alb.ingress.kubernetes.io/healthcheck-path: /actuator/health/readiness
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "15"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "3"
+    # Must be shorter than terminationGracePeriodSeconds (30) or a pod is killed
+    # while the ALB is still draining connections to it.
+    alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=20
+
+    # ==================================================== LOCKED TO CLOUDFRONT
+    # Attaching our own security group REPLACES the one the controller would
+    # manage, so manage-backend-security-group-rules must be true or the
+    # controller will not open the node ports and every target reads unhealthy.
+    #
+    # This is what stops anyone who discovers the ALB's DNS name from talking to
+    # the services over plain HTTP and bypassing CloudFront entirely.
+    alb.ingress.kubernetes.io/security-groups: "{{ required "ingress.albSecurityGroup must be set (make aws-up injects it)" .Values.ingress.albSecurityGroup }}"
+    alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
+
+    alb.ingress.kubernetes.io/tags: Project=rentez,Layer=ephemeral
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          # Prefix, matching scripts/gateway.conf's `location /api/accounts`.
+          # These five prefixes are the contract between the local nginx gateway
+          # and the ALB; if they drift, the app works in one environment only.
+          - path: {{ required "ingress.path must be set" .Values.ingress.path }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "rentez.name" . }}
+                port:
+                  number: 8080
+{{- end }}

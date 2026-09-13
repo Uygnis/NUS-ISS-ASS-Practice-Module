@@ -1,0 +1,33 @@
+# notification-service — M5 Notification
+#
+# Values that differ from deploy/helm/rentez-service/values.yaml. Anything shared
+# by all five services belongs there, not here.
+
+serviceName: notification-service
+
+
+database:
+  user: notification_user
+  passwordParameter: notification-db-password
+
+# NO INGRESS, AND NO AUTOSCALING. Both are deliberate.
+#
+# No ingress: notification-service is reached only by the outbox relays inside
+# the cluster, over Kubernetes DNS. It has no public API, so putting it on the
+# ALB would widen the attack surface for nothing.
+#
+# No autoscaling: it is a queue consumer, and CPU is the wrong signal for one. A
+# consumer falling behind is blocked, not busy, so utilisation stays low however
+# deep the backlog grows and the HPA would never fire. Enabling it would produce
+# a dashboard that looks healthy while the backlog climbs - worse than no
+# autoscaling at all, because it is misleading.
+#
+# The real fix is KEDA scaling on queue depth: Stage 4 of the scaling plan, and
+# out of scope here.
+
+ingress:
+  enabled: false
+
+autoscaling:
+  enabled: false
+replicaCount: 1

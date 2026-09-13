@@ -1,0 +1,25 @@
+# payment-service — M4 Payment & Refund
+#
+# Values that differ from deploy/helm/rentez-service/values.yaml. Anything shared
+# by all five services belongs there, not here.
+
+serviceName: payment-service
+
+
+database:
+  user: payment_user
+  passwordParameter: payment-db-password
+
+# Idempotency is enforced by two database constraints, not by pinning traffic to
+# one pod: a unique index on idempotency_key, and a PARTIAL unique index giving
+# at most one SUCCESS per booking. Both hold at any replica count.
+
+ingress:
+  enabled: true
+  path: /api/payments
+  order: 103
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4

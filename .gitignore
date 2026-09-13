@@ -151,3 +151,5 @@ vite.config.ts.timestamp-*
 # covered by the per-project .gitignore in backend/ and each services/*/.
 .DS_Store
 **/.DS_Store
+
+.secrets

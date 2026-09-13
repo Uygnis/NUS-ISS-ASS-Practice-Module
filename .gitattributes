@@ -1,0 +1,59 @@
+# RentEZ — line endings.
+#
+# WHY THIS FILE EXISTS
+# Git for Windows installs with core.autocrlf=true by default. Without the rules
+# below, every shell script in this repository is checked out with CRLF line
+# endings on a Windows machine, and bash then fails on the shebang line with:
+#
+#     ./scripts/smoke.sh: line 2: $'\r': command not found
+#
+# That error names neither line endings nor Windows, and it happens inside WSL2
+# and Git Bash alike, because the corruption is in the checkout rather than in
+# the shell. The same applies to the Makefile, to db/init/01-schemas.sql (which
+# Postgres runs from a bind mount) and to scripts/gateway.conf (which nginx
+# reads the same way).
+#
+# `* text=auto eol=lf` normalises everything to LF in the repository AND on
+# checkout, on every platform, which makes each developer's autocrlf setting
+# irrelevant. That is the point: this must not depend on four people configuring
+# their machines identically.
+
+* text=auto eol=lf
+
+# ------------------------------------------------------------------ must be LF
+# Called by a shell. CRLF breaks these outright.
+*.sh        text eol=lf
+Makefile    text eol=lf
+mvnw        text eol=lf
+
+# Read inside Linux containers from bind mounts.
+*.sql       text eol=lf
+*.conf      text eol=lf
+Dockerfile* text eol=lf
+.dockerignore text eol=lf
+.env.example  text eol=lf
+
+# Kubernetes and CloudFormation. YAML mostly tolerates CRLF, but block scalars
+# (the reaper Lambda's inline Python, the ALB fixed-response JSON) carry the
+# stray \r straight through into the deployed artefact.
+*.yml       text eol=lf
+*.yaml      text eol=lf
+
+# ---------------------------------------------------------------- must be CRLF
+# Windows batch files genuinely need CRLF; cmd.exe mis-parses LF-only scripts.
+*.cmd       text eol=crlf
+*.bat       text eol=crlf
+
+# ------------------------------------------------------------------- binary
+# text=auto detects most of these on its own; listing them stops a bad
+# heuristic from ever corrupting one.
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.jar       binary
+*.war       binary
+*.pdf       binary
+*.woff      binary
+*.woff2     binary
