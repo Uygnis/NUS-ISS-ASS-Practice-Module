@@ -7,6 +7,15 @@
 #   make check   verify tooling            make down    stop, keep data
 #   make infra   Mode A: infra only        make clean   stop, DELETE data
 #   make up      Mode B: everything        make db-check verify DB connections
+#
+# AWS (see aws/README.md). Local development needs none of this.
+#   make aws-check      verify tooling and credentials
+#   make aws-bootstrap  once per account; creates only free things
+#   make aws-up         cluster + database, ~20 min, ~$0.21/hr
+#   make aws-deploy     redeploy the app to a running env, ~3 min (CI does this)
+#   make aws-status     what is running, who has it, when it expires
+#   make aws-extend     push the lease out without redeploying
+#   make aws-down       dump to S3, then destroy everything hourly-billed
 
 SHELL         := /bin/bash
 .DEFAULT_GOAL := help
@@ -22,7 +31,13 @@ TARGETS := account-service:8081:rentez_auth \
            notification-service:8084:rentez_notification \
            payment-service:8085:rentez_payment
 
-MYSQL_ROOT_PASSWORD ?= rentez
+POSTGRES_PASSWORD ?= rentez
+POSTGRES_DB       ?= rentez
+
+# Every psql below runs inside the container as the superuser. ON_ERROR_STOP=1
+# so a failed statement is a failed target, rather than a zero exit with the
+# error printed halfway up the scrollback.
+PSQL := $(DC) exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d $(POSTGRES_DB)
 
 .PHONY: help
 help: ## Show this help
@@ -79,8 +94,8 @@ check-passwords: ## Confirm .env passwords match db/init/01-schemas.sql
 	            NOTIFICATION_DB_PASSWORD:notification_user; do \
 	  var=$${pair%%:*}; user=$${pair##*:}; \
 	  envpw=$$(grep -E "^$$var=" .env 2>/dev/null | head -1 | cut -d= -f2-); \
-	  sqlpw=$$(grep -E "CREATE USER IF NOT EXISTS '$$user'@'%' IDENTIFIED BY" \
-	            db/init/01-schemas.sql 2>/dev/null | sed -E "s/.*IDENTIFIED BY '([^']*)'.*/\1/"); \
+	  sqlpw=$$(grep -E "CREATE ROLE $$user LOGIN PASSWORD" \
+	            db/init/01-schemas.sql 2>/dev/null | sed -E "s/.*PASSWORD '([^']*)'.*/\1/"); \
 	  if [ -n "$$envpw" ] && [ -n "$$sqlpw" ] && [ "$$envpw" != "$$sqlpw" ]; then \
 	    printf "    \033[0;31mMISMATCH\033[0m %s: .env='%s' but 01-schemas.sql='%s'\n" "$$user" "$$envpw" "$$sqlpw"; \
 	    drift=1; \
@@ -93,11 +108,14 @@ check-passwords: ## Confirm .env passwords match db/init/01-schemas.sql
 
 # ================================================================== run
 .PHONY: infra
-infra: ## Mode A — MySQL, DynamoDB, Adminer, gateway (run services in your IDE)
+infra: ## Mode A — Postgres, DynamoDB, Adminer, gateway (run services in your IDE)
 	$(DC) up -d
-	@$(MAKE) --no-print-directory wait-mysql
+	@$(MAKE) --no-print-directory wait-postgres
 	@echo ""
-	@echo "  MySQL      localhost:3306    (Adminer: http://localhost:8090)"
+	@# Read the port back from Docker rather than echoing a constant: POSTGRES_PORT
+	@# lives in .env, which make does not parse, so a remapped port printed here
+	@# as 5432 sends people to a database that is not listening.
+	@echo "  Postgres   localhost:$$($(DC) port postgres 5432 | cut -d: -f2)    (Adminer: http://localhost:$$($(DC) port adminer 8080 | cut -d: -f2))"
 	@echo "  DynamoDB   localhost:8000"
 	@echo "  Gateway    http://localhost:8080"
 	@echo ""
@@ -107,7 +125,7 @@ infra: ## Mode A — MySQL, DynamoDB, Adminer, gateway (run services in your IDE
 .PHONY: up
 up: ## Mode B — the whole stack, backend and frontend together
 	$(APP) up -d --build
-	@$(MAKE) --no-print-directory wait-mysql
+	@$(MAKE) --no-print-directory wait-postgres
 	@echo ""
 	@echo "  Frontend   http://localhost:3000"
 	@echo "  Gateway    http://localhost:8080"
@@ -117,16 +135,16 @@ up: ## Mode B — the whole stack, backend and frontend together
 	@echo "  Services need ~60s to boot. Check with: make db-check"
 	@echo ""
 
-.PHONY: wait-mysql
-wait-mysql:
-	@printf "  waiting for MySQL"
+.PHONY: wait-postgres
+wait-postgres:
+	@printf "  waiting for PostgreSQL"
 	@for i in $$(seq 1 60); do \
-	  if [ "$$($(DC) ps --format '{{.Service}} {{.Health}}' 2>/dev/null | grep '^mysql ' | awk '{print $$2}')" = "healthy" ]; then \
+	  if [ "$$($(DC) ps --format '{{.Service}} {{.Health}}' 2>/dev/null | grep '^postgres ' | awk '{print $$2}')" = "healthy" ]; then \
 	    echo " — ready"; exit 0; \
 	  fi; \
 	  printf "."; sleep 2; \
 	done; \
-	echo ""; echo "  MySQL did not become healthy. Check: make logs S=mysql"; exit 1
+	echo ""; echo "  PostgreSQL did not become healthy. Check: make logs S=postgres"; exit 1
 
 .PHONY: down
 down: ## Stop everything, KEEP database data
@@ -180,32 +198,33 @@ db-check: ## Verify every service can reach its own schema
 	@echo ""
 
 .PHONY: db-schemas
-db-schemas: ## List the schemas and users that actually exist
-	@$(DC) exec -T mysql mysql -uroot -p$(MYSQL_ROOT_PASSWORD) \
-	  -e "SHOW DATABASES LIKE 'rentez%'; SELECT user, host FROM mysql.user WHERE user LIKE '%_user';"
+db-schemas: ## List the schemas and roles that actually exist
+	@$(PSQL) -c "\\dn" \
+	         -c "SELECT rolname, rolcanlogin FROM pg_roles WHERE rolname LIKE '%\\_user' ORDER BY rolname;"
 
 .PHONY: db-isolation
 db-isolation: ## Prove a service user CANNOT read another schema (for the report)
 	@echo ""
 	@echo "  Expected: auth_user is denied access to rentez_booking."
 	@echo ""
-	@$(DC) exec -T mysql mysql -uauth_user -pauth_pw \
-	  -e "SELECT COUNT(*) FROM rentez_booking.booking;" 2>&1 | sed 's/^/    /' || true
+	@$(DC) exec -T -e PGPASSWORD=auth_pw postgres \
+	  psql -U auth_user -d $(POSTGRES_DB) \
+	  -c "SELECT COUNT(*) FROM rentez_booking.booking;" 2>&1 | sed 's/^/    /' || true
 	@echo ""
-	@echo "  An 'Access denied' or 'command denied' above is the CORRECT result."
+	@echo "  A 'permission denied for schema rentez_booking' above is the CORRECT result."
 	@echo "  It is the evidence that schema-per-service isolation is real."
 	@echo ""
 
-.PHONY: mysql
-mysql: ## Open a MySQL shell as root
-	@$(DC) exec mysql mysql -uroot -p$(MYSQL_ROOT_PASSWORD)
+.PHONY: psql
+psql: ## Open a psql shell as the superuser
+	@$(DC) exec postgres psql -U postgres -d $(POSTGRES_DB)
 
 .PHONY: seed
 seed: ## Load demo data from db/seed/*.sql
 	@for f in db/seed/*.sql; do \
 	  [ -e "$$f" ] || continue; \
 	  echo "  applying $$f"; \
-	  $(DC) exec -T mysql mysql -uroot -p$(MYSQL_ROOT_PASSWORD) < "$$f" | sed 's/^/    /'; \
+	  $(PSQL) -f - < "$$f" | sed 's/^/    /'; \
 	done
 
 .PHONY: dynamo
@@ -231,3 +250,53 @@ test-frontend: ## Run the frontend tests
 .PHONY: build
 build: ## Build all images without starting anything
 	$(APP) build
+
+# ================================================================== AWS
+# Thin wrappers. All the logic lives in aws/scripts/ so it is reviewable as
+# shell rather than as Make, and so CI can call the same code paths.
+#
+# Every target runs against YOUR OWN AWS account with YOUR OWN credentials.
+# There are no shared secrets and nothing to configure in the repository - which
+# is what makes this work with a per-member account model.
+
+# Invoked through `bash` rather than executed directly. The exec bit survives a
+# normal git clone, but not a zip download or some Windows checkouts, and
+# "Permission denied" is a needlessly confusing first impression of the AWS
+# tooling. This costs nothing and removes the failure mode.
+AWS_SCRIPTS := bash aws/scripts
+
+.PHONY: aws-check
+aws-check: ## Verify AWS tooling and credentials before spending anything
+	@$(AWS_SCRIPTS)/aws-check.sh
+
+.PHONY: aws-bootstrap
+aws-bootstrap: ## Once per account: budgets, secrets, VPC, ECR, CloudFront (all free)
+	@NOTIFY_EMAIL="$(NOTIFY_EMAIL)" $(AWS_SCRIPTS)/aws-bootstrap.sh
+
+.PHONY: aws-up
+aws-up: ## Bring up the cluster and database (~20 min). TTL_HOURS=4 by default
+	@TTL_HOURS="$(or $(TTL_HOURS),4)" TAG="$(TAG)" RESTORE="$(or $(RESTORE),1)" $(AWS_SCRIPTS)/aws-up.sh
+
+.PHONY: aws-deploy
+aws-deploy: ## Deploy the app to an already-running environment (~3 min, no infra)
+	@TAG="$(TAG)" $(AWS_SCRIPTS)/aws-deploy.sh
+
+.PHONY: aws-status
+aws-status: ## What is running, the burn rate, and when the lease expires
+	@$(AWS_SCRIPTS)/aws-status.sh
+
+.PHONY: aws-extend
+aws-extend: ## Push the lease out without redeploying (make aws-extend HOURS=8)
+	@HOURS="$(or $(HOURS),4)" $(AWS_SCRIPTS)/aws-extend.sh
+
+.PHONY: aws-down
+aws-down: ## Dump to S3, then destroy everything billed by the hour
+	@KEEP_DB="$(KEEP_DB)" SKIP_BACKUP="$(SKIP_BACKUP)" $(AWS_SCRIPTS)/aws-down.sh
+
+.PHONY: aws-images
+aws-images: ## Build and push all five service images to ECR
+	@TAG="$(TAG)" $(AWS_SCRIPTS)/aws-images.sh
+
+.PHONY: aws-nuke
+aws-nuke: ## aws-down, then delete the persistent stack too. End of semester only.
+	@$(AWS_SCRIPTS)/aws-nuke.sh

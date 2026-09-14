@@ -1,0 +1,110 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rentez.name" . }}
+  labels: {{- include "rentez.labels" . | nindent 4 }}
+spec:
+  # Omitted deliberately when autoscaling is on: if both the Deployment and the
+  # HPA declare a replica count, every `helm upgrade` resets the Deployment to
+  # its static value and the HPA scales it back up, so the cluster flaps between
+  # two answers and the load-test graph is nonsense.
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels: {{- include "rentez.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "rentez.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      # Spot nodes can vanish with two minutes' notice. 30 seconds is enough for
+      # Spring to finish in-flight requests and matches the ALB's deregistration
+      # delay, so a terminating pod stops receiving traffic before it stops
+      # answering it.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: {{ include "rentez.name" . }}
+          image: {{ include "rentez.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.containerPort }}
+          env:
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef: { name: rentez-config, key: db-host }
+            - name: DB_PORT
+              valueFrom:
+                configMapKeyRef: { name: rentez-config, key: db-port }
+            - name: DB_NAME
+              value: {{ .Values.database.name | quote }}
+            - name: DB_USER
+              value: {{ required "database.user must be set" .Values.database.user | quote }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: rentez-secrets
+                  key: {{ required "database.passwordParameter must be set" .Values.database.passwordParameter | quote }}
+            - name: RENTEZ_JWT_SECRET
+              valueFrom:
+                secretKeyRef: { name: rentez-secrets, key: jwt-secret }
+            # Service-to-service calls go direct, by Kubernetes DNS, never
+            # through the ALB. These are the /internal paths, which the ALB
+            # answers 404 for on purpose - see internal-deny in deploy/k8s/.
+            - name: RENTEZ_CATALOG_BASE_URL
+              value: http://catalog-service:8080
+            - name: RENTEZ_RESERVATION_BASE_URL
+              value: http://reservation-service:8080
+            - name: RENTEZ_NOTIFICATION_BASE_URL
+              value: http://notification-service:8080
+            - name: RENTEZ_PAYMENT_BASE_URL
+              value: http://payment-service:8080
+            - name: JAVA_TOOL_OPTIONS
+              value: {{ .Values.javaToolOptions | quote }}
+            # Hikari is capped at 3 in application.properties. Repeated here so
+            # the number is visible to anyone reading the running Deployment,
+            # which is where people look during a load test.
+            - name: SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE
+              value: "3"
+            # `always` publishes datasource details to anyone who can reach
+            # /actuator/health. Fine locally, not on an internet-facing ALB.
+            - name: MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS
+              value: when_authorized
+            # RENTEZ_AWS_DYNAMODB_ENDPOINT is deliberately UNSET here. Compose
+            # sets it to the local emulator; leaving it empty lets the AWS SDK
+            # resolve the real regional endpoint.
+            {{- range $k, $v := .Values.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          # Spring Boot exposes these only because
+          # management.endpoint.health.probes.enabled=true is set in every
+          # application.properties. Without it both return 404, no pod ever
+          # becomes ready, no target joins the ALB, and the deploy looks hung.
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: http }
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 4
+          # A JVM plus Flyway can take a while on a cold spot node. The startup
+          # probe buys up to 150s without making the liveness probe so slack
+          # that a genuinely wedged pod is never restarted.
+          startupProbe:
+            httpGet: { path: /actuator/health/readiness, port: http }
+            periodSeconds: 5
+            failureThreshold: 30
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+      # Spread pods across nodes so losing one reclaimed spot node cannot take
+      # out every replica of a service at once.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {{- include "rentez.selectorLabels" . | nindent 14 }}

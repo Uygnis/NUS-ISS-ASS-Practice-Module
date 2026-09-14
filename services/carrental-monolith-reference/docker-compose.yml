@@ -1,0 +1,35 @@
+services:
+  # The Spring Boot API. Mirrors the practice repo's service layout so this block can be
+  # pasted straight into their root docker-compose.yml, which currently has no backend at all.
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      # The browser talks to the API from the frontend's origin, not from inside the network,
+      # so these are host ports: 3000 is what compose maps the Vite server to below.
+      - CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+      - JWT_SECRET=local-dev-secret-key-change-me-please-32bytes-min
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/hello || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 40s
+
+  # Copied verbatim from the practice repo's compose file - do not edit.
+  # Requires the rest of ./frontend (package.json, Dockerfile.dev, index.html, vite.config.js);
+  # only frontend/src has been pulled so far. See API.md for the one-line fetch command.
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3000:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - CHOKIDAR_USEPOLLING=true

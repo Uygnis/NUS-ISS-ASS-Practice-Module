@@ -1,0 +1,10 @@
+apiVersion: v2
+name: rentez-service
+description: >
+  One Spring Boot service in the RentEZ platform. Installed five times, once per
+  service, with a values file from deploy/helm/values/. The five services differ
+  only in image, path prefix, database role and HPA bounds, so a single
+  parameterised chart is far less to keep in step than five near-identical ones.
+type: application
+version: 1.0.0
+appVersion: "0.0.1"

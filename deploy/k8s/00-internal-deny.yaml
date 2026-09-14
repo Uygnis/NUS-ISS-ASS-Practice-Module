@@ -1,0 +1,56 @@
+# RentEZ — the ALB half of the /internal control.
+#
+# WHY THIS FILE EXISTS
+# scripts/gateway.conf shadows all five prefixes locally with a regex location
+# that returns 404 for anything under /api/<service>/internal. An ALB will NOT
+# do that on its own: its path rules are prefix matches, so a rule for
+# /api/reservations happily matches /api/reservations/internal/confirm and
+# forwards it.
+#
+# Without this manifest, deploying to AWS silently publishes the saga
+# confirm/cancel endpoints and every /internal/stats endpoint to the internet -
+# endpoints that exist only for service-to-service calls. The SERVICE-role JWT
+# each service requires on those paths is the second line of defence. This is
+# the first, and it is the one that matches local behaviour.
+#
+# It joins the same IngressGroup as the five services and claims group.order 10,
+# well below their 100+, so the ALB evaluates these rules first.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rentez-internal-deny
+  namespace: rentez
+  annotations:
+    alb.ingress.kubernetes.io/group.name: rentez
+    alb.ingress.kubernetes.io/group.order: "10"
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    # A fixed response served by the ALB itself. No pod is involved, so this
+    # costs nothing and cannot be bypassed by a service being unhealthy.
+    alb.ingress.kubernetes.io/actions.deny-internal: >
+      {"type":"fixed-response","fixedResponseConfig":
+      {"contentType":"application/json","statusCode":"404",
+      "messageBody":"{\"error\":\"not_found\"}"}}
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          # ImplementationSpecific rather than Prefix: it passes the pattern
+          # through to the ALB unchanged, which is what allows the wildcard in
+          # the middle. Prefix would reject it.
+          - path: /api/accounts/internal/*
+            pathType: ImplementationSpecific
+            backend: { service: { name: deny-internal, port: { name: use-annotation } } }
+          - path: /api/catalog/internal/*
+            pathType: ImplementationSpecific
+            backend: { service: { name: deny-internal, port: { name: use-annotation } } }
+          - path: /api/reservations/internal/*
+            pathType: ImplementationSpecific
+            backend: { service: { name: deny-internal, port: { name: use-annotation } } }
+          - path: /api/payments/internal/*
+            pathType: ImplementationSpecific
+            backend: { service: { name: deny-internal, port: { name: use-annotation } } }
+          - path: /api/notifications/internal/*
+            pathType: ImplementationSpecific
+            backend: { service: { name: deny-internal, port: { name: use-annotation } } }

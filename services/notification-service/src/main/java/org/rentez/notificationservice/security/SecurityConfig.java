@@ -53,7 +53,7 @@ public class SecurityConfig {
 				.csrf(csrf -> csrf.disable())
 				.sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
 				.authorizeHttpRequests(auth -> auth
-						.requestMatchers("/actuator/health/**", "/actuator/info").permitAll()
+						.requestMatchers("/actuator/health/**", "/actuator/info","/swagger-ui/**","/swagger-ui.html","/v3/api-docs/**").permitAll()
 						// The outbox relays post here. Not reachable through the
 						// gateway, and not reachable with a human token either.
 						.requestMatchers("/api/notifications/internal/**").hasRole("SERVICE")
