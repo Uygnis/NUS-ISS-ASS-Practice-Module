@@ -23,7 +23,6 @@ permissions:
 
 jobs:
   deploy:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     # A workflow_dispatch has no workflow_run to inspect, so `conclusion` is
     # empty and the bare check would silently skip every manual run.
     if: >-
