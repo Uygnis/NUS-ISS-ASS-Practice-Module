@@ -34,7 +34,7 @@ public class MaintenanceController {
 	}
 
 	@PostMapping
-	@PreAuthorize("hasRole('ADMIN')")
+	@PreAuthorize("hasAnyRole('STAFF', 'ADMIN')")
 	@ResponseStatus(HttpStatus.CREATED)
 	public MaintenanceResponse schedule(@AuthenticationPrincipal Jwt jwt,
 			@Valid @RequestBody MaintenanceRequest request) {

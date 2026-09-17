@@ -57,20 +57,31 @@ public class CarController {
 		return carService.search(location, type);
 	}
 
+	@GetMapping("/all")
+	@PreAuthorize("hasRole('STAFF')")
+	public List<CarResponse> searchAll(
+			@RequestParam(required = false) String location,
+			@RequestParam(required = false) CarType type) {
+		if (location == null && type == null) {
+			return carService.browseFleet();
+		}
+		return carService.searchAll(location, type);
+	}
+
 	@GetMapping("/{id}")
 	public CarResponse findById(@PathVariable Long id) {
 		return carService.getById(id);
 	}
 
 	@PostMapping
-	@PreAuthorize("hasRole('ADMIN')")
+	@PreAuthorize("hasAnyRole('STAFF', 'ADMIN')")
 	@ResponseStatus(HttpStatus.CREATED)
 	public CarResponse create(@AuthenticationPrincipal Jwt jwt, @Valid @RequestBody CarRequest request) {
 		return carService.create(request, CurrentUser.from(jwt).email());
 	}
 
 	@PutMapping("/{id}")
-	@PreAuthorize("hasRole('ADMIN')")
+	@PreAuthorize("hasAnyRole('STAFF', 'ADMIN')")
 	public CarResponse update(@AuthenticationPrincipal Jwt jwt, @PathVariable Long id,
 			@Valid @RequestBody CarRequest request) {
 		return carService.update(id, request, CurrentUser.from(jwt).email());
