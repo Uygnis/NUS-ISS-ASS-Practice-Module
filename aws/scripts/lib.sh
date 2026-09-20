@@ -11,6 +11,14 @@ CLUSTER_NAME="${CLUSTER_NAME:-rentez}"
 # deliberately not per-environment - it holds the VPC and ECR, which every
 # environment in the account shares.
 ACCOUNT_STACK="${ACCOUNT_STACK:-rentez-account}"
+
+# The pre-split stack, which held everything. It is still what exists in any
+# account bootstrapped before the split, and it publishes all twelve outputs
+# the two new stacks publish between them - so pointing both ACCOUNT_STACK and
+# ENVIRONMENT_STACK at it adopts that environment as it stands, with no
+# migration and no change to the CloudFront URL. See "Adopting an account
+# bootstrapped before the split" in aws/README.md.
+LEGACY_STACK="${LEGACY_STACK:-rentez-persistent}"
 ENVIRONMENT_STACK="${ENVIRONMENT_STACK:-rentez-environment}"
 DATABASE_STACK="${DATABASE_STACK:-rentez-database}"
 GUARDRAILS_STACK="${GUARDRAILS_STACK:-rentez-guardrails}"

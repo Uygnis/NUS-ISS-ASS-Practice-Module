@@ -278,8 +278,14 @@ instance, with the five per-service schemas created in each by `make aws-up`. A
 second instance would be a second hourly bill for isolation the database
 already provides.
 
-`10-persistent.yaml` stays in the tree until the live stack is migrated off it,
-but nothing deploys it any more.
+`10-persistent.yaml` stays in the tree because the account bootstrapped before
+the split still runs on it. It needs no migration: that one stack publishes all
+twelve outputs the two new ones publish between them, so setting
+`ACCOUNT_STACK=rentez-persistent ENVIRONMENT_STACK=rentez-persistent` adopts the
+existing environment unchanged, URL included. `make aws-bootstrap` refuses to
+run without that when it finds a legacy stack, rather than building a second VPC
+and then failing on bucket names that already exist. See "Adopting an account
+bootstrapped before the split" in `aws/README.md`.
 
 **Subnet tags, since this is easy to get wrong later.** The shared subnets carry
 `kubernetes.io/role/elb` and deliberately *no* `kubernetes.io/cluster/<name>`
