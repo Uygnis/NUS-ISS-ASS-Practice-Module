@@ -1,0 +1,524 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >
+  One RentEZ environment: its frontend bucket and CloudFront distribution, its
+  DynamoDB tables and SQS queues, its backup bucket, and the reaper that tears
+  its cluster down when the lease expires.
+
+  ONE OF THESE PER ENVIRONMENT. Deploy it alongside 10-account.yaml, which holds
+  the VPC and ECR that every environment in the account shares.
+
+  The DynamoDB tables and SQS queues live here rather than in the account stack
+  because they carry data. Sharing rentez-availability or rentez-booking-events
+  between dev and prod would let a dev deploy mutate prod state.
+
+  NAMING, AND WHY IT IS CONDITIONAL.
+  With EnvironmentName empty, every resource and export keeps exactly the name
+  10-persistent.yaml gave it, so the existing environment is adopted rather than
+  rebuilt. Any other value inserts that name: rentez-frontend-dev-<account>,
+  rentez-sessions-dev, export rentez-app-url-dev. Bucket names and export names
+  are unique per account, which is the whole reason a second copy of the old
+  template could not be created at all.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: ""
+    AllowedPattern: "^[a-z0-9-]*$"
+    Description: >
+      Suffix distinguishing this environment's resources, e.g. dev or prod.
+      Empty means the original unsuffixed names - keep it empty for the
+      environment that already exists, so its bucket and distribution are not
+      replaced.
+
+  AlbDnsName:
+    Type: String
+    Default: placeholder.example.com
+    Description: >
+      DNS name of the ALB that CloudFront forwards /api/* to. Left as a
+      placeholder while the cluster is down. `make aws-up` re-deploys this stack
+      with the real value once the ingress has an address, and `make aws-down`
+      resets it. Do not set this by hand.
+
+  ClusterName:
+    Type: String
+    Default: rentez
+    Description: EKS cluster name. Must match aws/eksctl/cluster.yaml.
+
+Conditions:
+  # Empty EnvironmentName means "the environment that predates this split", and
+  # every name below falls back to what 10-persistent.yaml used.
+  IsDefaultEnvironment: !Equals [!Ref EnvironmentName, ""]
+
+Resources:
+
+  # ==============================================================  S3  ========
+
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !If [IsDefaultEnvironment, !Sub "rentez-frontend-${AWS::AccountId}", !Sub "rentez-frontend-${EnvironmentName}-${AWS::AccountId}"]
+      # Private. CloudFront reaches it through Origin Access Control, so there is
+      # no public bucket policy anywhere in this project.
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      Tags:
+        - { Key: Project, Value: rentez }
+        - { Key: Layer, Value: persistent }
+
+  # Every `make aws-down` writes a pg_dump here before anything is destroyed.
+  # Versioned, because the failure mode that actually loses data is a good dump
+  # being overwritten by a bad one taken seconds later.
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !If [IsDefaultEnvironment, !Sub "rentez-backups-${AWS::AccountId}", !Sub "rentez-backups-${EnvironmentName}-${AWS::AccountId}"]
+      VersioningConfiguration: { Status: Enabled }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-old-versions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+          - Id: expire-old-dumps
+            Status: Enabled
+            Prefix: dumps/
+            ExpirationInDays: 90
+      Tags:
+        - { Key: Project, Value: rentez }
+        - { Key: Layer, Value: persistent }
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub "${FrontendBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+  # ======================================================  CLOUDFRONT  ========
+  # THE PIECE THAT MAKES "NO DOMAIN NAME" WORK.
+  #
+  # One distribution serves the React build from S3 at / and proxies /api/* to
+  # the ALB. Because both live on the same origin, the browser only ever speaks
+  # HTTPS to *.cloudfront.net using CloudFront's own free certificate. There is
+  # no mixed-content problem, no ACM certificate to buy, and no domain to
+  # register. It also means the frontend needs no API base URL compiled into it,
+  # so a torn-down and recreated ALB does not require a frontend rebuild.
+  #
+  # The distribution lives in the PERSISTENT stack so its URL never changes.
+  # Only its /api/* origin is rewritten, by `make aws-up`.
+
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${ClusterName}-s3-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "RentEZ ${ClusterName} - S3 app + /api to ALB"
+        DefaultRootObject: index.html
+        # PriceClass_100 is North America and Europe only and is the cheapest.
+        # PriceClass_200 adds Singapore, which is where the markers are. The
+        # difference is fractions of a cent at coursework volume; the free tier
+        # covers 1 TB/month either way.
+        PriceClass: PriceClass_200
+        HttpVersion: http2
+        Origins:
+          - Id: s3-frontend
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt OriginAccessControl.Id
+            S3OriginConfig: { OriginAccessIdentity: "" }
+          - Id: alb-api
+            DomainName: !Ref AlbDnsName
+            CustomOriginConfig:
+              # http-only: the ALB has no certificate, because it has no domain
+              # name to put one on. The public hop (browser -> CloudFront) is
+              # HTTPS; this hop is inside AWS and reachable only from CloudFront
+              # thanks to the prefix-list rule on AlbSecurityGroup.
+              OriginProtocolPolicy: http-only
+              HTTPPort: 80
+              OriginReadTimeout: 60
+        DefaultCacheBehavior:
+          TargetOriginId: s3-frontend
+          ViewerProtocolPolicy: redirect-to-https
+          # Managed-CachingOptimized
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          AllowedMethods: [GET, HEAD, OPTIONS]
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: alb-api
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            # Managed-CachingDisabled. An API response must never be cached at
+            # the edge here: /api/reservations/availability changes on every
+            # booking, and a cached 200 would hand two customers the same car.
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            # Managed-AllViewerExceptHostHeader. Forwards Authorization, cookies
+            # and query strings, but rewrites Host to the origin - which is
+            # required, because the ALB routes on path and would otherwise see
+            # the CloudFront hostname.
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+        CustomErrorResponses:
+          # A React single-page app owns its own routing: a deep link to
+          # /bookings/42 is not an S3 object, and S3 answers 403 through OAC.
+          # Rewriting to index.html lets the client router take over.
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 10
+      Tags:
+        - { Key: Project, Value: rentez }
+        - { Key: Layer, Value: persistent }
+
+  # ==========================================================  SECRETS  =======
+  # SSM Parameter Store standard tier: free, 4 KB per parameter, and readable by
+  # a pod through an IRSA role. See the header for why not Secrets Manager.
+
+  # THE TWO SECRETS ARE NOT DECLARED HERE, AND THAT IS NOT AN OVERSIGHT.
+  #
+  #   /rentez/jwt-secret          HS256 key. account-service issues tokens with
+  #                               it and every other service validates locally
+  #                               against the same key, which is why nothing
+  #                               calls account-service on the request path.
+  #   /rentez/db/master-password  RDS master password, kept in the persistent
+  #                               layer so a rebuilt instance accepts the same
+  #                               password the dump was taken under.
+  #
+  # AWS::SSM::Parameter cannot create a SecureString - CloudFormation supports
+  # only String and StringList. Declaring them here would mean either storing
+  # both in plaintext, or passing them as stack parameters, where they persist in
+  # the stack's parameter history and are readable by anyone with
+  # cloudformation:DescribeStacks regardless of NoEcho.
+  #
+  # scripts/aws-bootstrap.sh therefore creates them out of band with
+  # `aws ssm put-parameter --type SecureString`, encrypted under the account's
+  # default KMS key. That is free, and it keeps both values out of this file, out
+  # of the repository, and out of CloudFormation's history. 20-database.yaml
+  # reads the password back with {{resolve:ssm-secure:...}}, which only works
+  # because the parameter really is a SecureString.
+
+  # The reaper's deadline. `make aws-up` writes an ISO-8601 UTC timestamp here;
+  # `make aws-down` writes "none". This one string is what stands between the
+  # team and a $73/month control plane nobody remembers creating.
+  ExpiresAtParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !If [IsDefaultEnvironment, "/rentez/env/expires-at", !Sub "/rentez/env/${EnvironmentName}/expires-at"]
+      Type: String
+      Value: none
+      Description: >
+        ISO-8601 UTC instant after which the reaper tears the cluster down, or
+        "none" to disarm. Set by `make aws-up`; do not edit by hand.
+      Tags: { Project: rentez }
+
+  # ==================================================  DYNAMODB & SQS  ========
+  # PAY-PER-REQUEST and an idle queue both cost exactly nothing, so these are
+  # created for architectural fidelity with the design document.
+  #
+  # BE HONEST ABOUT THESE IN THE REPORT: no Java code touches either one today.
+  # There is no AWS SDK dependency in any pom.xml, and the asynchronous path is
+  # a transactional outbox table in Postgres drained over HTTP by OutboxRelay.
+  # The tables and queues are provisioned and empty. Saying "provisioned, not yet
+  # wired" is a stronger claim than implying they are live.
+
+  SessionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !If [IsDefaultEnvironment, "rentez-sessions", !Sub "rentez-sessions-${EnvironmentName}"]
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: jti, AttributeType: S }]
+      KeySchema: [{ AttributeName: jti, KeyType: HASH }]
+      TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }
+      Tags: [{ Key: Project, Value: rentez }]
+
+  AvailabilityTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !If [IsDefaultEnvironment, "rentez-availability", !Sub "rentez-availability-${EnvironmentName}"]
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: car_id, AttributeType: S }
+        - { AttributeName: day, AttributeType: S }
+      KeySchema:
+        - { AttributeName: car_id, KeyType: HASH }
+        - { AttributeName: day, KeyType: RANGE }
+      Tags: [{ Key: Project, Value: rentez }]
+
+  AuditTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !If [IsDefaultEnvironment, "rentez-audit", !Sub "rentez-audit-${EnvironmentName}"]
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: pk, AttributeType: S }
+        - { AttributeName: sk, AttributeType: S }
+      KeySchema:
+        - { AttributeName: pk, KeyType: HASH }
+        - { AttributeName: sk, KeyType: RANGE }
+      Tags: [{ Key: Project, Value: rentez }]
+
+  BookingEventsDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !If [IsDefaultEnvironment, "rentez-booking-events-dlq", !Sub "rentez-booking-events-dlq-${EnvironmentName}"]
+      MessageRetentionPeriod: 1209600
+      Tags: [{ Key: Project, Value: rentez }]
+
+  BookingEventsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !If [IsDefaultEnvironment, "rentez-booking-events", !Sub "rentez-booking-events-${EnvironmentName}"]
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt BookingEventsDlq.Arn
+        maxReceiveCount: 3
+      Tags: [{ Key: Project, Value: rentez }]
+
+  # =====================================================  TTL REAPER  =========
+  # THE SINGLE MOST IMPORTANT RESOURCE IN THIS TEMPLATE.
+  #
+  # With per-member AWS accounts there is no shared CI cron to fall back on, and
+  # the EKS control plane bills $0.10/hr whether or not anyone is using it. The
+  # realistic failure is not a bad architecture, it is somebody closing their
+  # laptop on a Friday.
+  #
+  # DESIGN: the Lambda runs every five minutes and performs AT MOST ONE step of
+  # teardown per invocation, then returns. No waiters, no sleeps, no risk of
+  # hitting the 15-minute execution limit, and every invocation is idempotent -
+  # if a step half-fails, the next tick simply retries it. The sequence matters:
+  # load balancers first (they hold ENIs that block everything else), then
+  # nodegroups, then the cluster, then the database.
+  #
+  # Cost: 8,640 invocations a month at 128 MB for well under a second each. The
+  # Lambda free tier is 1M requests and 400,000 GB-seconds. This is free.
+
+  ReaperRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: reap-rentez
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - eks:ListClusters
+                  - eks:DescribeCluster
+                  - eks:DeleteCluster
+                  - eks:ListNodegroups
+                  - eks:DescribeNodegroup
+                  - eks:DeleteNodegroup
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - elasticloadbalancing:DescribeLoadBalancers
+                  - elasticloadbalancing:DescribeTags
+                  - elasticloadbalancing:DeleteLoadBalancer
+                Resource: "*"
+              - Effect: Allow
+                Action: [ssm:GetParameter, ssm:PutParameter]
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/rentez/*"
+              - Effect: Allow
+                Action: [cloudformation:DescribeStacks, cloudformation:DeleteStack]
+                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/rentez-database/*"
+              # DeleteStack on an RDS stack needs permission to delete the
+              # instance itself, and to take the final snapshot on the way out.
+              - Effect: Allow
+                Action: [rds:DeleteDBInstance, rds:DescribeDBInstances, rds:CreateDBSnapshot, rds:AddTagsToResource]
+                Resource: "*"
+
+  ReaperFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${ClusterName}-reaper"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ReaperRole.Arn
+      Timeout: 120
+      MemorySize: 128
+      Environment:
+        Variables:
+          CLUSTER_NAME: !Ref ClusterName
+          EXPIRES_PARAM: !Ref ExpiresAtParam
+          DB_STACK: rentez-database
+      Tags:
+        - { Key: Project, Value: rentez }
+      Code:
+        ZipFile: |
+          """One step of teardown per invocation. Idempotent, converging, cheap."""
+          import datetime as dt
+          import os
+
+          import boto3
+          from botocore.exceptions import ClientError
+
+          CLUSTER = os.environ["CLUSTER_NAME"]
+          PARAM = os.environ["EXPIRES_PARAM"]
+          DB_STACK = os.environ["DB_STACK"]
+
+          ssm = boto3.client("ssm")
+          eks = boto3.client("eks")
+          elb = boto3.client("elbv2")
+          cfn = boto3.client("cloudformation")
+
+
+          def expired():
+              """True once the deadline in SSM has passed. 'none' disarms the reaper."""
+              value = ssm.get_parameter(Name=PARAM)["Parameter"]["Value"].strip()
+              if value.lower() in ("none", ""):
+                  return False, value
+              try:
+                  deadline = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+              except ValueError:
+                  # An unparseable deadline must NOT mean "never expire" - that
+                  # would turn a typo into an unbounded bill. Treat it as expired
+                  # and let the teardown be the safe default.
+                  return True, value
+              if deadline.tzinfo is None:
+                  deadline = deadline.replace(tzinfo=dt.timezone.utc)
+              return dt.datetime.now(dt.timezone.utc) >= deadline, value
+
+
+          def cluster_load_balancers():
+              """ALBs the AWS Load Balancer Controller made for this cluster.
+
+              They must go first: each holds ENIs in the subnets, and an ALB left
+              behind keeps billing at ~$16/month long after the cluster is gone.
+              The controller normally deletes them when the Ingress is deleted,
+              but a reaped cluster never gets that far.
+              """
+              found = []
+              for page in elb.get_paginator("describe_load_balancers").paginate():
+                  for lb in page["LoadBalancers"]:
+                      arn = lb["LoadBalancerArn"]
+                      tags = elb.describe_tags(ResourceArns=[arn])["TagDescriptions"][0]["Tags"]
+                      pairs = {t["Key"]: t["Value"] for t in tags}
+                      if pairs.get("elbv2.k8s.aws/cluster") == CLUSTER:
+                          found.append(arn)
+              return found
+
+
+          def handler(event, context):
+              is_expired, raw = expired()
+              if not is_expired:
+                  return {"action": "none", "expires_at": raw}
+
+              # --- step 1: load balancers -------------------------------------
+              for arn in cluster_load_balancers():
+                  elb.delete_load_balancer(LoadBalancerArn=arn)
+                  return {"action": "deleted-load-balancer", "arn": arn}
+
+              # --- step 2 and 3: nodegroups, then the cluster ------------------
+              try:
+                  groups = eks.list_nodegroups(clusterName=CLUSTER)["nodegroups"]
+              except ClientError as exc:
+                  if exc.response["Error"]["Code"] != "ResourceNotFoundException":
+                      raise
+                  groups = None  # cluster already gone
+
+              if groups is not None:
+                  for name in groups:
+                      state = eks.describe_nodegroup(
+                          clusterName=CLUSTER, nodegroupName=name
+                      )["nodegroup"]["status"]
+                      if state != "DELETING":
+                          eks.delete_nodegroup(clusterName=CLUSTER, nodegroupName=name)
+                          return {"action": "deleting-nodegroup", "nodegroup": name}
+                      # Already deleting: nothing to do but wait for the next tick.
+                      return {"action": "waiting-on-nodegroup", "nodegroup": name}
+
+                  state = eks.describe_cluster(name=CLUSTER)["cluster"]["status"]
+                  if state != "DELETING":
+                      eks.delete_cluster(name=CLUSTER)
+                      return {"action": "deleting-cluster", "cluster": CLUSTER}
+                  return {"action": "waiting-on-cluster", "cluster": CLUSTER}
+
+              # --- step 4: the database stack ---------------------------------
+              # Last, so that a dump taken by `make aws-down` is never racing a
+              # half-deleted cluster. Reaching here means the cluster is gone.
+              try:
+                  status = cfn.describe_stacks(StackName=DB_STACK)["Stacks"][0]["StackStatus"]
+                  if not status.startswith("DELETE"):
+                      cfn.delete_stack(StackName=DB_STACK)
+                      return {"action": "deleting-database-stack", "stack": DB_STACK}
+                  return {"action": "waiting-on-database-stack", "status": status}
+              except ClientError as exc:
+                  if "does not exist" not in str(exc):
+                      raise
+
+              # --- done: disarm so we stop doing this every five minutes ------
+              ssm.put_parameter(Name=PARAM, Value="none", Type="String", Overwrite=True)
+              return {"action": "complete-disarmed"}
+
+  ReaperSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ClusterName}-reaper-schedule"
+      Description: Checks /rentez/env/expires-at every five minutes.
+      ScheduleExpression: "rate(5 minutes)"
+      State: ENABLED
+      Targets:
+        - Id: reaper
+          Arn: !GetAtt ReaperFunction.Arn
+
+  ReaperInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ReaperFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ReaperSchedule.Arn
+
+Outputs:
+  FrontendBucketName:
+    Value: !Ref FrontendBucket
+    Export: { Name: !If [IsDefaultEnvironment, "rentez-frontend-bucket", !Sub "rentez-frontend-bucket-${EnvironmentName}"] }
+  BackupBucketName:
+    Value: !Ref BackupBucket
+    Export: { Name: !If [IsDefaultEnvironment, "rentez-backup-bucket", !Sub "rentez-backup-bucket-${EnvironmentName}"] }
+  DistributionId:
+    Value: !Ref Distribution
+    Export: { Name: !If [IsDefaultEnvironment, "rentez-distribution-id", !Sub "rentez-distribution-id-${EnvironmentName}"] }
+  AppUrl:
+    Description: The team's permanent URL. Bookmark this; it survives every teardown.
+    Value: !Sub "https://${Distribution.DomainName}"
+    Export: { Name: !If [IsDefaultEnvironment, "rentez-app-url", !Sub "rentez-app-url-${EnvironmentName}"] }
