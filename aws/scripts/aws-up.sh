@@ -117,15 +117,41 @@ fi
 #
 # Conditional on CI_ROLE_ARN so that per-member accounts, which have no pipeline
 # pointed at them, are unaffected.
+# VIA THE AWS CLI, NOT eksctl. `eksctl create accessentry` takes the access
+# policy only from a config file - it has no --access-policy flag, and passing
+# one fails with "unknown flag". The previous version of this block did exactly
+# that, sent both streams to /dev/null, and reported the failure as "CI role
+# already has cluster access". The role never got access on any cluster this
+# built, and the first sign of it would have been a deploy dying with
+# "You must be logged in to the server (Unauthorized)".
+#
+# So: no output suppression here, and no branch that treats failure as success.
+# The two calls are separately idempotent - create-access-entry conflicts if the
+# entry exists, associate-access-policy is a safe no-op on repeat - so an
+# existing entry is tolerated while anything else is fatal.
 if [ -n "${CI_ROLE_ARN:-}" ]; then
-	if eksctl create accessentry --cluster "$CLUSTER_NAME" --region "$AWS_REGION" \
-			--principal-arn "$CI_ROLE_ARN" \
-			--access-policy "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy,accessScope={type=cluster}" \
-			>/dev/null 2>&1; then
-		ok "granted cluster access to the CI role"
-	else
-		ok "CI role already has cluster access"
+	ENTRY_ERR=""
+	if ! ENTRY_ERR="$(aws eks create-access-entry --cluster-name "$CLUSTER_NAME" \
+			--region "$AWS_REGION" --principal-arn "$CI_ROLE_ARN" 2>&1 >/dev/null)"; then
+		case "$ENTRY_ERR" in
+			*ResourceInUseException*) : ;;   # already there, which is fine
+			*) die "could not create the EKS access entry for $CI_ROLE_ARN:
+  $ENTRY_ERR" ;;
+		esac
 	fi
+
+	aws eks associate-access-policy --cluster-name "$CLUSTER_NAME" \
+		--region "$AWS_REGION" --principal-arn "$CI_ROLE_ARN" \
+		--policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
+		--access-scope type=cluster >/dev/null \
+		|| die "could not attach the cluster-admin access policy to $CI_ROLE_ARN."
+
+	# Confirm rather than assume, because this is the failure that surfaces far
+	# away from its cause.
+	aws eks list-access-entries --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" \
+		--query 'accessEntries' --output text | grep -qF "$CI_ROLE_ARN" \
+		|| die "the access entry for $CI_ROLE_ARN is still not listed on '$CLUSTER_NAME'."
+	ok "CI role has cluster access"
 fi
 
 # Wait for the database only now — by this point it has almost certainly
@@ -169,8 +195,17 @@ helm repo update >/dev/null
 # neither EKS nor add-ons.
 #
 # What matters is that the metrics API answers, not who installed it.
-if kubectl get deployment metrics-server -n kube-system >/dev/null 2>&1; then
+# ASK EKS, NOT THE ROLLOUT. Checking for the Deployment races the add-on: EKS
+# creates the ServiceAccount first and the Deployment a moment later, so on a
+# freshly created cluster this test can run in between, find nothing, and send
+# Helm into a ServiceAccount that already exists - which fails with "cannot be
+# imported into the current release" and names neither EKS nor add-ons. The
+# add-on's existence is knowable immediately and does not race.
+if aws eks describe-addon --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" \
+		--addon-name metrics-server >/dev/null 2>&1; then
 	ok "metrics-server already present (EKS add-on) — leaving it alone"
+elif kubectl get deployment metrics-server -n kube-system >/dev/null 2>&1; then
+	ok "metrics-server already present — leaving it alone"
 else
 	helm upgrade --install metrics-server metrics-server/metrics-server \
 		--namespace kube-system --wait >/dev/null
@@ -338,6 +373,63 @@ echo "restored $LATEST"
 SH
 	run_db_pod rentez-db-restore "$RESTORE_SH" || warn "restore failed — the services will build a fresh schema instead"
 	rm -f "$RESTORE_SH"
+
+	# THE RESTORE TAKES THE SCHEMAS BACK OFF THEIR OWNERS, so this has to run
+	# after it and cannot be folded into the bootstrap above.
+	#
+	# 01-schemas.sql creates each schema with AUTHORIZATION <service role>,
+	# making that role the owner - which is what lets Flyway run CREATE TABLE
+	# with no further grants. A pg_dump replay recreates the same schemas as the
+	# master user, so ownership silently reverts to rentez_admin and every
+	# service then dies on startup with "permission denied for schema
+	# rentez_auth". Re-running the bootstrap does not help: its CREATE SCHEMA IF
+	# NOT EXISTS is a no-op once the schema is there, so ownership has to be
+	# asserted with ALTER.
+	say "restoring schema ownership after the dump"
+	OWNERS_SH=$(mktemp)
+	cat > "$OWNERS_SH" <<'OWNEOF'
+set -e
+psql -v ON_ERROR_STOP=1 <<'SQL'
+DO $$
+DECLARE
+  pair RECORD;
+  obj  RECORD;
+BEGIN
+  FOR pair IN
+    SELECT * FROM (VALUES
+      ('rentez_auth','auth_user'), ('rentez_fleet','fleet_user'),
+      ('rentez_booking','booking_user'), ('rentez_payment','payment_user'),
+      ('rentez_notification','notification_user')
+    ) AS t(schema_name, role_name)
+  LOOP
+    EXECUTE format('ALTER SCHEMA %I OWNER TO %I', pair.schema_name, pair.role_name);
+    FOR obj IN
+      SELECT c.relname, c.relkind FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = pair.schema_name AND c.relkind IN ('r','S','v','m','p')
+        -- A sequence owned by a table column follows its table; ALTER SEQUENCE
+        -- ... OWNER on one fails with "is linked to table".
+        AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.objid = c.oid AND d.classid = 'pg_class'::regclass
+            AND d.deptype IN ('a','i')
+        )
+    LOOP
+      EXECUTE format('ALTER %s %I.%I OWNER TO %I',
+        CASE obj.relkind WHEN 'S' THEN 'SEQUENCE'
+                         WHEN 'v' THEN 'VIEW'
+                         WHEN 'm' THEN 'MATERIALIZED VIEW'
+                         ELSE 'TABLE' END,
+        pair.schema_name, obj.relname, pair.role_name);
+    END LOOP;
+  END LOOP;
+END $$;
+SQL
+echo "schema ownership restored"
+OWNEOF
+	run_db_pod rentez-db-owners "$OWNERS_SH" || die "could not restore schema ownership after the dump.
+  Every service will fail on startup with 'permission denied for schema rentez_auth'."
+	rm -f "$OWNERS_SH"
 else
 	ok "no dump to restore — Flyway and the seed profile will build a fresh database"
 fi

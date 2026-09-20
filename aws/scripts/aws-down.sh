@@ -161,13 +161,7 @@ step "5/5  Edge and lease"
 # Reset the CloudFront origin. The distribution stays — that is what keeps the
 # team's URL stable — but pointing it at a deleted ALB would leave it serving
 # confusing errors instead of an honest 502.
-aws cloudformation deploy \
-	--stack-name "$ENVIRONMENT_STACK" \
-	--template-file "$REPO_ROOT/aws/cloudformation/15-environment.yaml" \
-	--capabilities CAPABILITY_IAM \
-	--parameter-overrides "AlbDnsName=placeholder.example.com" "ClusterName=$CLUSTER_NAME" \
-		"EnvironmentName=$ENVIRONMENT_NAME" \
-	--no-fail-on-empty-changeset >/dev/null
+deploy_environment_stack "placeholder.example.com"
 ok "CloudFront origin reset"
 
 disarm_reaper

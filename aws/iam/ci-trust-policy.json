@@ -13,7 +13,7 @@
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
         },
         "StringLike": {
-          "token.actions.githubusercontent.com:sub": "repo:Uygnis/NUS-ISS-ASS-Practice-Module:*"
+          "token.actions.githubusercontent.com:sub": "<SUB_CLAIM_PREFIX>:*"
         }
       }
     }

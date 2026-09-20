@@ -405,6 +405,34 @@ deploy, both of which run against whichever account you are authenticated to.
 
 ---
 
+## The OIDC subject claim is not what most guides say
+
+This repository has GitHub's **immutable subject claims** enabled, so the `sub`
+in the token is pinned to numeric IDs rather than names:
+
+```
+repo:Uygnis@75312898/NUS-ISS-ASS-Practice-Module@1313919272:environment:prod
+```
+
+not the `repo:OWNER/REPO:...` that every copy-pasted trust policy expects. A
+policy matching the name form never matches, and the only symptom is:
+
+```
+Could not assume role with OIDC: Not authorized to perform sts:AssumeRoleWithWebIdentity
+```
+
+which says nothing about claims and looks exactly like a missing provider or a
+wrong ARN. Ask GitHub for the prefix rather than assembling it by hand:
+
+```bash
+gh api repos/Uygnis/NUS-ISS-ASS-Practice-Module/actions/oidc/customization/sub \
+  --jq '.sub_claim_prefix'
+```
+
+Substitute that into `<SUB_CLAIM_PREFIX>` in `aws/iam/ci-trust-policy.json`. The
+IDs are immutable, which is the point: renaming the repository or the owner does
+not silently hand trust to whoever claims the old name.
+
 ## Adopting an account bootstrapped before the split
 
 `10-persistent.yaml` used to hold everything. It is now split into

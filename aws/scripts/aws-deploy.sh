@@ -124,16 +124,9 @@ if [ "$CURRENT_ALB" = "$ALB_DNS" ]; then
 	ok "invalidated"
 else
 	say "repointing CloudFront at the new ALB (takes a few minutes to propagate)"
-	# The prefix list is no longer passed here: it parameterises the ALB
-	# security group, which moved to the account stack. Only the origin and
-	# the environment's own identity belong to this stack now.
-	aws cloudformation deploy \
-		--stack-name "$ENVIRONMENT_STACK" \
-		--template-file "$REPO_ROOT/aws/cloudformation/15-environment.yaml" \
-		--capabilities CAPABILITY_IAM \
-		--parameter-overrides "AlbDnsName=$ALB_DNS" "ClusterName=$CLUSTER_NAME" \
-			"EnvironmentName=$ENVIRONMENT_NAME" \
-		--no-fail-on-empty-changeset >/dev/null
+	# Which template this uses depends on whether the environment stack is an
+	# adopted pre-split one; see deploy_environment_stack in lib.sh.
+	deploy_environment_stack "$ALB_DNS"
 	aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" --paths '/*' >/dev/null
 	ok "CloudFront updated"
 fi
