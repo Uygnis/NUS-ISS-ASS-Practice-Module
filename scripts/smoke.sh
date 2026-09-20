@@ -81,17 +81,35 @@ check "customer refused admin endpoint" "$code" "403"
 printf "\nCatalog\n"
 code=$(call GET /api/catalog/cars)
 check "browse cars (public)" "$code" "200"
-CAR_ID=$(json "d[0]['id']")
-CAR_RATE=$(json "d[0]['dailyRate']")
-pass "fleet has $(json 'len(d)') cars; using car ${CAR_ID} at ${CAR_RATE}/day"
+pass "fleet has $(json 'len(d)') cars"
 
 # ------------------------------------------------------------- availability
 printf "\nAvailability (moved from catalog to reservation)\n"
-START="2031-03-01"; END="2031-03-03"
+# A RANDOM WINDOW, AND A CAR THAT IS ACTUALLY FREE IN IT.
+#
+# This used to book car 1 over a fixed 2031-03-01..03. Against `make up` that
+# is fine - the database is new every time. Against a deployed environment,
+# which restores from a dump, the first run books that car and every later run
+# gets a correct 409 from `create booking` and then cascades: eleven failures
+# with empty ids, none of which is the real problem. A re-run has to be able to
+# tell "the code is broken" from "I already ran this".
+#
+# So the window moves per run, and the car is taken from the availability
+# response rather than assumed - which also makes the booking assertions below
+# mean what they say, since availability IS the set of free cars.
+read -r START END OVERLAP_START OVERLAP_END <<<"$(python3 - <<'PYDATE'
+import datetime, random
+base = datetime.date(2031, 1, 1) + datetime.timedelta(days=random.randrange(2000))
+day = datetime.timedelta(days=1)
+print(base, base + 2 * day, base + day, base + 3 * day)
+PYDATE
+)"
 code=$(call GET "/api/reservations/availability?startDate=${START}&endDate=${END}")
 check "availability (public)" "$code" "200"
 AVAIL_BEFORE=$(json 'len(d)')
-pass "${AVAIL_BEFORE} cars free ${START}..${END}"
+CAR_ID=$(json "d[0]['carId']")
+CAR_RATE=$(json "d[0]['dailyRate']")
+pass "${AVAIL_BEFORE} cars free ${START}..${END}; using car ${CAR_ID} at ${CAR_RATE}/day"
 
 # ------------------------------------------------------------------ booking
 printf "\nBooking\n"
@@ -102,7 +120,7 @@ check "status PENDING_PAYMENT" "$(json "d['status']")" "PENDING_PAYMENT"
 # 3 inclusive days at the snapshotted rate.
 pass "total $(json "d['totalAmount']") for 3 days at $(json "d['dailyRate']") (snapshotted: $(json "d['carMake']") $(json "d['carModel']"))"
 
-code=$(call POST /api/reservations/bookings "{\"carId\":${CAR_ID},\"startDate\":\"2031-03-02\",\"endDate\":\"2031-03-04\"}" "Authorization: Bearer ${CUSTOMER_TOKEN}")
+code=$(call POST /api/reservations/bookings "{\"carId\":${CAR_ID},\"startDate\":\"${OVERLAP_START}\",\"endDate\":\"${OVERLAP_END}\"}" "Authorization: Bearer ${CUSTOMER_TOKEN}")
 check "overlapping booking refused" "$code" "409"
 
 code=$(call GET "/api/reservations/availability?startDate=${START}&endDate=${END}")
