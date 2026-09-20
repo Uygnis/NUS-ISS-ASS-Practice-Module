@@ -263,6 +263,56 @@ done
 	&& ok "webhook ready" \
 	|| die "the ingress webhook never became usable. Try: kubectl -n kube-system rollout restart deploy/aws-load-balancer-controller, then re-run."
 
+# ---------------------------------------------------------------- logging
+# WHY THIS EXISTS. `kubectl logs` only reaches a pod that is still alive, on a
+# cluster that still exists. This environment is torn down every few hours and
+# its nodes are spot instances, so the logs from the run that actually went
+# wrong are routinely gone before anyone looks. Fluent Bit copies every
+# container's stdout to CloudWatch, where it outlives both.
+#
+# ONE GROUP, NOT ONE PER SERVICE. cloudwatch_logs supports a log_group_template,
+# but its record accessor rejects a literal prefix before an accessor - a
+# template of "/rentez/$kubernetes['namespace_name']" fails to parse with
+# "bad input character '/'" and the pods crash-loop on init. So everything goes
+# to one group and the STREAM name carries the detail:
+#
+#   group   /rentez/cluster
+#   stream  fluentbit-kube.var.log.containers.<pod>_<namespace>_<container>-<id>.log
+#
+# Filter by service name in the console, or:
+#   aws logs tail /rentez/cluster --follow --filter-pattern account-service
+#
+# RETENTION IS SET DELIBERATELY. CloudWatch keeps log events forever by default
+# and bills for the storage indefinitely - including for clusters destroyed
+# months ago, which is the kind of charge nobody goes looking for. Override with
+# LOG_RETENTION_DAYS.
+LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-7}"
+
+# EXPECT QUIET SERVICES TO SHIP NOTHING. Fluent Bit tails from the END of each
+# container log, so anything written before it started is not captured, and
+# Spring Boot logs no line at all for a successful request. A service with no
+# CloudWatch stream is usually idle rather than broken - restart it, or turn a
+# log level up, before concluding the shipping is at fault.
+
+# eks/, not fluent/. The fluent repo publishes the upstream `fluent-bit` chart;
+# `aws-for-fluent-bit` is AWS's build with the CloudWatch output plugin already
+# in it, and it lives in the eks-charts repo added above.
+say "installing Fluent Bit to ship container logs to CloudWatch"
+helm upgrade --install aws-for-fluent-bit eks/aws-for-fluent-bit \
+	--namespace kube-system \
+	--set serviceAccount.create=false \
+	--set serviceAccount.name=aws-for-fluent-bit \
+	--set cloudWatchLogs.enabled=true \
+	--set cloudWatchLogs.region="$AWS_REGION" \
+	--set cloudWatchLogs.logGroupName=/rentez/cluster \
+	--set cloudWatchLogs.autoCreateGroup=true \
+	--set cloudWatchLogs.logRetentionDays="$LOG_RETENTION_DAYS" \
+	--set firehose.enabled=false \
+	--set kinesis.enabled=false \
+	--set elasticsearch.enabled=false \
+	--wait >/dev/null
+ok "fluent-bit — logs at /rentez/cluster, kept $LOG_RETENTION_DAYS days"
+
 helm upgrade --install cluster-autoscaler autoscaler/cluster-autoscaler \
 	--namespace kube-system \
 	--set "autoDiscovery.clusterName=$CLUSTER_NAME" \
