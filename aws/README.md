@@ -221,14 +221,19 @@ is nothing to leak.
    the policy is scoped statement by statement rather than reaching for
    `AdministratorAccess`.
 
-3. **Repository variables** (Settings → Secrets and variables → Actions →
-   Variables — *variables*, not secrets; none of these are sensitive, and there
-   are deliberately no long-lived AWS keys anywhere):
+3. **A GitHub Environment** (Settings → Environments), with these set on it as
+   *variables*, not secrets; none of these are sensitive, and there are
+   deliberately no long-lived AWS keys anywhere:
 
    | Variable | Value |
    |---|---|
    | `AWS_DEPLOY_ROLE_ARN` | the role from step 2 |
    | `AWS_REGION` | `ap-southeast-1` |
+
+   On the Environment rather than the repository: the account a run deploys to
+   is decided by the Environment it binds, which is what lets members with
+   separate AWS accounts each deploy to their own. The Environment name is what
+   you type into Run workflow; `dev.yml` and `prod.yml` pass `dev` and `prod`.
 
 4. **Give the role access to the cluster.** IAM permission is not cluster
    permission: `eksctl` makes only the creating principal a cluster admin, so
