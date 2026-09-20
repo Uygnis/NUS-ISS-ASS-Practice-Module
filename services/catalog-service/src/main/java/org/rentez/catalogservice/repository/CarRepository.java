@@ -12,7 +12,7 @@ import java.util.List;
 public interface CarRepository extends JpaRepository<Car, Long> {
 
 	List<Car> findByStatus(CarStatus status);
-
+	List<Car> findByStatusNot(CarStatus status);
 	long countByStatus(CarStatus status);
 
 	/**
@@ -49,4 +49,16 @@ public interface CarRepository extends JpaRepository<Car, Long> {
 	List<Car> findByFilters(@Param("status") CarStatus status,
 			@Param("location") String location,
 			@Param("type") CarType type);
+
+	@Query("""
+		SELECT c FROM Car c
+		WHERE c.status <> :status
+		AND (:location IS NULL OR LOWER(c.location) LIKE LOWER(CONCAT('%', :location, '%')))
+		AND (:type IS NULL OR c.type = :type)
+		""")
+	List<Car> findByFiltersNotStatus(
+			@Param("status") CarStatus status,
+			@Param("location") String location,
+			@Param("type") CarType type
+	);
 }

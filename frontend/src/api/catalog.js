@@ -8,6 +8,11 @@ export function createCatalogApi(config, auth) {
         query: { location, type },
         auth,
       }),
+    searchAll: (location, type) =>
+      apiRequest(base, "/api/catalog/cars/all", {
+        query: { location, type },
+        auth,
+      }),
     find: (id) => apiRequest(base, `/api/catalog/cars/${id}`, { auth }),
     create: (payload) =>
       apiRequest(base, "/api/catalog/cars", {
