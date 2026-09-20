@@ -32,33 +32,53 @@ name: Rentez Deploy
 # is the normal state for anyone deploying from their laptop with
 # `make aws-images` and `make aws-deploy`.
 #
-# WHY ENVIRONMENTS RATHER THAN ONE REPOSITORY VARIABLE.
-# The team has per-member AWS accounts. A single repository variable can only
-# point at one of them, so whoever set it last owned everyone's deploys and
-# spent their own budget doing it. An Environment per member lets each person
-# press Run workflow against their own account, and dev.yml and prod.yml keep
-# working by passing environment: dev and environment: prod.
+# ONE SHARED ACCOUNT, ONE ROLE, SEVERAL ENVIRONMENTS.
+# Every deploy assumes the same role in the same AWS account, so anyone on the
+# team can press Run workflow without having an AWS account of their own. The
+# role ARN is therefore a REPOSITORY variable, set once.
 #
-# TO SET UP YOUR OWN (once per AWS account):
+# What the GitHub Environment selects is not the account but the target inside
+# it: which cluster, which namespace, which CloudFormation stacks. dev.yml and
+# prod.yml pass environment: dev and environment: prod, so a merge to dev and a
+# merge to main land in different places instead of overwriting each other.
+#
+# Variables are read Environment-first, falling back to the repository, which is
+# what makes that split work with one credential:
+#
+#   Repository  AWS_DEPLOY_ROLE_ARN   the shared role, same for every deploy
+#               AWS_REGION            unless an environment overrides it
+#   Environment CLUSTER_NAME          e.g. rentez-dev / rentez-prod
+#               NAMESPACE             e.g. rentez-dev / rentez-prod
+#               PERSISTENT_STACK      e.g. rentez-persistent-dev / -prod
+#               DATABASE_STACK        e.g. rentez-database-dev / -prod
+#
+# Every one of those infrastructure names defaults in aws/scripts/lib.sh, so an
+# Environment that sets none of them deploys to the original single `rentez`
+# environment and nothing changes.
+#
+# TO SET THE ACCOUNT UP (once, in the shared account):
 #   1. Create a GitHub OIDC identity provider:
 #        aws iam create-open-id-connect-provider \
 #          --url https://token.actions.githubusercontent.com \
 #          --client-id-list sts.amazonaws.com \
 #          --thumbprint-list 1c58a3a8518e8759bf075b76b750d4f2df264fcd
-#   2. Create a role trusting this repository only, with the policy in
-#      aws/iam/ci-deploy-policy.json.
-#   3. Create a GitHub Environment (Settings > Environments) and set
-#      AWS_DEPLOY_ROLE_ARN on it, plus AWS_REGION if you are not in
-#      ap-southeast-1. These are Environment variables, not repository ones.
-#   4. Export CI_ROLE_ARN=<that role> before running `make aws-up`, so the
-#      cluster grants it an EKS access entry. IAM permission is NOT cluster
-#      permission; skip this and every deploy dies with "You must be logged in
-#      to the server (Unauthorized)". The cluster is ephemeral, so this has to
-#      be redone on every aws-up.
-#   5. Actions > Rentez Deploy > Run workflow, and name your Environment.
+#   2. Create the role with BOTH policies from aws/iam/: ci-trust-policy.json
+#      says who may assume it (any run from this repository), and
+#      ci-deploy-policy.json says what it may then do.
+#   3. Set AWS_DEPLOY_ROLE_ARN as a repository variable.
+#   4. For each environment, create a GitHub Environment holding the names
+#      above, and bring its cluster up with those same names:
+#        CLUSTER_NAME=rentez-dev CI_ROLE_ARN=<role> make aws-up
+#      CI_ROLE_ARN is what grants the role an EKS access entry. IAM permission
+#      is NOT cluster permission; skip it and every deploy dies with "You must
+#      be logged in to the server (Unauthorized)". Clusters are ephemeral, so
+#      this has to be redone on every aws-up, for every cluster.
+#   5. Actions > Rentez Deploy > Run workflow, and name the Environment.
 #
-# The shared dev and prod Environments work the same way; they just happen to
-# be named by dev.yml and prod.yml rather than typed in by hand.
+# Because the role is shared, ANY run from this repository can assume it - that
+# is the point, and it is also the limit. It is scoped to this repository, not
+# to a branch or an Environment, so treat write access to the repository as
+# equivalent to deploy access to the account.
 #
 # There are deliberately NO long-lived AWS access keys in GitHub secrets. OIDC
 # issues a short-lived credential per run, which is both safer and one less
@@ -82,10 +102,12 @@ on:
         default: manual
 
 concurrency:
-  # Deliberately NOT keyed on the ref. dev and main deploy to the SAME cluster,
-  # and two concurrent Helm rolls interleave their releases with the loser
-  # winning. Queue instead.
-  group: deploy
+  # Keyed on the Environment, because each one now names its own cluster and
+  # stacks. Two environments no longer contend, so a prod deploy does not queue
+  # behind a dev one; two runs against the SAME environment still do, which is
+  # the case that matters - concurrent Helm rolls interleave their releases with
+  # the loser winning.
+  group: deploy-${{ inputs.environment }}
   # And deliberately not cancel-in-progress: a half-applied deploy is worse than
   # a slow one. Never kill a running roll to start a newer one.
   cancel-in-progress: false
@@ -243,21 +265,35 @@ jobs:
       - uses: azure/setup-kubectl@v4
       # eksctl is not installed: this half creates no infrastructure.
 
-      # aws-deploy.sh reads AWS_REGION from the environment for
-      # `aws eks update-kubeconfig`, so it is set here rather than inherited.
+      # Everything that decides WHICH environment this run touches comes from
+      # the GitHub Environment's variables. aws/scripts/lib.sh defaults each of
+      # these to its `rentez` value with ${VAR:-default}, so an Environment that
+      # sets none of them behaves exactly as before - an unset variable arrives
+      # as the empty string and takes the default.
       - name: Deploy
         env:
           AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-1' }}
+          CLUSTER_NAME: ${{ vars.CLUSTER_NAME }}
+          NAMESPACE: ${{ vars.NAMESPACE }}
+          PERSISTENT_STACK: ${{ vars.PERSISTENT_STACK }}
+          DATABASE_STACK: ${{ vars.DATABASE_STACK }}
         run: make aws-deploy TAG=${{ needs.build.outputs.short }}
 
-      # dev and main share one cluster, so the last deploy wins. This line is
-      # the only record of which branch put what there.
+      # The URL is per-environment now, so it is read from that environment's own
+      # persistent stack rather than a hardcoded one.
       - name: Report
+        env:
+          PERSISTENT_STACK: ${{ vars.PERSISTENT_STACK || 'rentez-persistent' }}
+          CLUSTER_NAME: ${{ vars.CLUSTER_NAME || 'rentez' }}
         run: |
-          URL=$(aws cloudformation describe-stacks --stack-name rentez-persistent \
+          URL=$(aws cloudformation describe-stacks --stack-name "$PERSISTENT_STACK" \
                   --query "Stacks[0].Outputs[?OutputKey=='AppUrl'].OutputValue" --output text)
           {
-            echo "Deployed \`${{ needs.build.outputs.short }}\` from **${{ inputs.environment }}** to $URL"
+            echo "Deployed \`${{ needs.build.outputs.short }}\` to **${{ inputs.environment }}**"
             echo ""
-            echo "One cluster is shared by dev and main — the most recent deploy is what is live."
+            echo "| | |"
+            echo "|---|---|"
+            echo "| URL | $URL |"
+            echo "| Cluster | \`$CLUSTER_NAME\` |"
+            echo "| Stack | \`$PERSISTENT_STACK\` |"
           } >> "$GITHUB_STEP_SUMMARY"
