@@ -117,6 +117,26 @@ fi
 #
 # Conditional on CI_ROLE_ARN so that per-member accounts, which have no pipeline
 # pointed at them, are unaffected.
+#
+# LOOKED UP, NOT REMEMBERED. CI_ROLE_ARN used to be an environment variable and
+# nothing else, which made granting the pipeline access depend on whoever ran
+# this having exported it. Forget it once and the cluster comes up looking
+# perfect, and the next merge dies with the Unauthorized described above - the
+# exact failure the block below exists to prevent. So: if the variable is unset,
+# find the role. An account with no rentez-ci-deploy role has no pipeline
+# pointed at it and skips the whole block, which is the per-member case.
+CI_ROLE_NAME="${CI_ROLE_NAME:-rentez-ci-deploy}"
+if [ -z "${CI_ROLE_ARN:-}" ]; then
+	CI_ROLE_ARN="$(aws iam get-role --role-name "$CI_ROLE_NAME" \
+		--query Role.Arn --output text 2>/dev/null || true)"
+	# A plain `[ -n ... ] && say` would be the last command in this branch, and
+	# under `set -e` its false case exits the script - taking out exactly the
+	# per-member account this lookup is supposed to let through.
+	if [ -n "$CI_ROLE_ARN" ]; then
+		say "found $CI_ROLE_NAME, granting it cluster access"
+	fi
+fi
+
 # VIA THE AWS CLI, NOT eksctl. `eksctl create accessentry` takes the access
 # policy only from a config file - it has no --access-policy flag, and passing
 # one fails with "unknown flag". The previous version of this block did exactly

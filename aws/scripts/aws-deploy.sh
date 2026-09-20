@@ -52,8 +52,26 @@ aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION" >/dev/nu
 # 2. Has the namespace been bootstrapped? Without rentez-secrets the pods start
 #    and then crash on a missing DB_PASSWORD, which reads as an application bug
 #    rather than as a half-built environment.
-kubectl get secret rentez-secrets --namespace "$NAMESPACE" >/dev/null 2>&1 \
-	|| die "namespace '$NAMESPACE' is not bootstrapped (no rentez-secrets). Run 'make aws-up'."
+#
+#    READ THE ERROR BEFORE NAMING THE CAUSE. This check used to send stderr to
+#    /dev/null and report every failure as a missing secret. That is wrong for
+#    the most likely one: a CI role with no EKS access entry is refused by the
+#    API server with "Unauthorized", and the secret check cannot tell the
+#    difference between "it is not there" and "I am not allowed to look". The
+#    advice it then gave - run `make aws-up` - does not fix an access entry, and
+#    re-running it against a perfectly good environment finds nothing wrong.
+if ! SECRET_ERR="$(kubectl get secret rentez-secrets --namespace "$NAMESPACE" 2>&1 >/dev/null)"; then
+	case "$SECRET_ERR" in
+		*Unauthorized*|*orbidden*)
+			die "not authorized against cluster '$CLUSTER_NAME'.
+  The credentials are valid - the API server is refusing them. This principal
+  has no EKS access entry, which every new cluster needs afresh:
+    $SECRET_ERR" ;;
+		*)
+			die "namespace '$NAMESPACE' is not bootstrapped (no rentez-secrets). Run 'make aws-up'.
+    $SECRET_ERR" ;;
+	esac
+fi
 
 # 3. Which tag? Default to the current commit, which is what CI tagged.
 if [ -z "$TAG" ]; then
