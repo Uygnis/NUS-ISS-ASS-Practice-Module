@@ -191,8 +191,19 @@ The role needs two policies: a *trust* policy saying who may assume it, and a
 `create-role` requires the first — it has no default, which is why this step
 previously could not be completed from the repo alone.
 
+Two placeholders have to be filled in first. `<ACCOUNT_ID>` is obvious;
+`<SUB_CLAIM_PREFIX>` is not, and getting it wrong is the single most likely
+reason a deploy fails with `Not authorized to perform
+sts:AssumeRoleWithWebIdentity`. This repository uses immutable subject claims,
+so the token's `sub` carries numeric IDs rather than names — ask GitHub for it:
+
 ```bash
-# Substitute <ACCOUNT_ID> in ci-trust-policy.json first.
+gh api repos/Uygnis/NUS-ISS-ASS-Practice-Module/actions/oidc/customization/sub \
+  --jq '.sub_claim_prefix'
+# repo:Uygnis@75312898/NUS-ISS-ASS-Practice-Module@1313919272
+```
+
+```bash
 aws iam create-role --role-name rentez-ci-deploy \
   --assume-role-policy-document file://aws/iam/ci-trust-policy.json
 

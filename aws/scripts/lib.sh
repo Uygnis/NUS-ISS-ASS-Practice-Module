@@ -51,6 +51,54 @@ die()  { printf "\n  %s %s\n\n" "$(_c '0;31' 'ERROR')" "$*" >&2; exit 1; }
 
 step() { printf "\n%s\n" "$(_c '1;37' "== $*")"; }
 
+# ------------------------------------------------- environment stack updates
+# Updating the environment stack means re-deploying its template with a new
+# AlbDnsName. WHICH TEMPLATE depends on what the stack actually is.
+#
+# THIS MATTERS MORE THAN IT LOOKS. An account bootstrapped before the split runs
+# on rentez-persistent, which holds the VPC, the subnets, the security groups
+# and the ECR repositories as well as this environment's buckets and CloudFront.
+# Deploying 15-environment.yaml onto it does not just update the origin - it
+# tells CloudFormation that every resource NOT in that template should be
+# deleted, which is the VPC and ECR among them.
+#
+# That is not hypothetical: it was attempted once and CloudFormation began the
+# deletion, stopping only because rentez-database still imported
+# rentez-db-parameter-group and an export in use cannot be removed. With no
+# environment up, nothing would have held that export and the VPC would have
+# gone.
+#
+# So an adopted legacy stack is updated with the template it was built from.
+deploy_environment_stack() {
+	local alb_dns="$1"
+
+	if [ "$ENVIRONMENT_STACK" = "$LEGACY_STACK" ]; then
+		# 10-persistent.yaml requires the prefix list and has no default for it.
+		local prefix_list
+		prefix_list="$(aws ec2 describe-managed-prefix-lists \
+			--filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing \
+			--query 'PrefixLists[0].PrefixListId' --output text)"
+		[ -n "$prefix_list" ] && [ "$prefix_list" != "None" ] \
+			|| die "could not find the CloudFront prefix list in $AWS_REGION."
+
+		aws cloudformation deploy \
+			--stack-name "$ENVIRONMENT_STACK" \
+			--template-file "$REPO_ROOT/aws/cloudformation/10-persistent.yaml" \
+			--capabilities CAPABILITY_IAM \
+			--parameter-overrides "AlbDnsName=$alb_dns" "ClusterName=$CLUSTER_NAME" \
+				"CloudFrontPrefixListId=$prefix_list" \
+			--no-fail-on-empty-changeset >/dev/null
+	else
+		aws cloudformation deploy \
+			--stack-name "$ENVIRONMENT_STACK" \
+			--template-file "$REPO_ROOT/aws/cloudformation/15-environment.yaml" \
+			--capabilities CAPABILITY_IAM \
+			--parameter-overrides "AlbDnsName=$alb_dns" "ClusterName=$CLUSTER_NAME" \
+				"EnvironmentName=$ENVIRONMENT_NAME" \
+			--no-fail-on-empty-changeset >/dev/null
+	fi
+}
+
 # ------------------------------------------------------------------ preflight
 require_tools() {
 	local missing=0 t
