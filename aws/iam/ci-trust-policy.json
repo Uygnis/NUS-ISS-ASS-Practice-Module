@@ -1,0 +1,37 @@
+{
+  "__comment": [
+    "Trust policy for the rentez-ci-deploy role: who may assume it, as opposed to",
+    "ci-deploy-policy.json which says what it may then do. `aws iam create-role`",
+    "requires this and there is no default, so the role cannot be created without it.",
+    "",
+    "Replace <ACCOUNT_ID> with the AWS account the role lives in, and",
+    "<ENVIRONMENT_NAME> with the GitHub Environment that holds its",
+    "AWS_DEPLOY_ROLE_ARN variable.",
+    "",
+    "The `sub` condition is scoped to one Environment rather than the whole",
+    "repository. With per-member AWS accounts that scoping is what keeps the",
+    "accounts separate: a run bound to someone else's Environment presents a",
+    "different `sub` and cannot assume this role, so a teammate's deploy cannot",
+    "spend your budget. Widen it to repo:OWNER/REPO:* only for an account the",
+    "whole team is meant to share.",
+    "",
+    "Remove this __comment key before use; IAM rejects unknown top-level keys."
+  ],
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "GitHubActionsOIDC",
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          "token.actions.githubusercontent.com:sub": "repo:Uygnis/NUS-ISS-ASS-Practice-Module:environment:<ENVIRONMENT_NAME>"
+        }
+      }
+    }
+  ]
+}

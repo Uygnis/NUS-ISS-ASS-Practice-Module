@@ -186,27 +186,45 @@ aws iam create-open-id-connect-provider \
 
 ### Step 2: Create the CI role
 
-Create role `rentez-ci-deploy` trusting **only this repository** through that
-provider, then:
+The role needs two policies: a *trust* policy saying who may assume it, and a
+*permissions* policy saying what it may then do. Both are in the repo.
+
+Copy `aws/iam/ci-trust-policy.json`, drop its `__comment` key, and substitute
+your account ID and the GitHub Environment name from Step 3:
 
 ```bash
+aws iam create-role --role-name rentez-ci-deploy \
+  --assume-role-policy-document file://ci-trust-policy.json
+
 aws iam put-role-policy --role-name rentez-ci-deploy \
   --policy-name rentez-deploy \
   --policy-document file://aws/iam/ci-deploy-policy.json
 ```
 
+The trust policy is scoped to a single Environment, not the whole repository.
+With per-member accounts that is what keeps them separate: a run bound to
+someone else's Environment presents a different `sub` and cannot assume your
+role, so their deploy cannot spend your budget.
+
 This role is cluster-admin on EKS, which is why the policy is scoped statement
 by statement rather than using `AdministratorAccess`.
 
-### Step 3: Set repository variables
+### Step 3: Create a GitHub Environment and set its variables
 
-Settings → Secrets and variables → Actions → **Variables** (not secrets — none
-of these are sensitive, and there are deliberately no long-lived AWS keys):
+Settings → **Environments** → New environment. The name is what you type into
+Run workflow, and what `dev.yml` and `prod.yml` pass automatically as `dev` and
+`prod`. On that Environment set **Variables** (not secrets — none of these are
+sensitive, and there are deliberately no long-lived AWS keys):
 
 | Variable | Value |
 |---|---|
 | `AWS_DEPLOY_ROLE_ARN` | the role from Step 2 |
 | `AWS_REGION` | `ap-southeast-1` |
+
+These belong on the Environment, not on the repository. The account a run
+deploys to is decided by the Environment it binds, which is how members with
+separate AWS accounts each deploy to their own. A repository-level variable
+would point everyone at one account.
 
 ### Step 4: Grant the role cluster access
 

@@ -203,10 +203,15 @@ is nothing to leak.
 1. **OIDC provider** — the commands are in the header of
    `.github/workflows/deploy.yml`.
 
-2. **One role**, trusting only this repository through that provider, with the
-   policy in `aws/iam/ci-deploy-policy.json`:
+2. **One role**, with both of its policies from `aws/iam/`. The trust policy
+   says who may assume it, the permissions policy what it may then do:
 
    ```bash
+   # Copy ci-trust-policy.json first, drop its __comment key, and substitute
+   # your account ID and Environment name.
+   aws iam create-role --role-name rentez-ci-deploy \
+     --assume-role-policy-document file://ci-trust-policy.json
+
    aws iam put-role-policy --role-name rentez-ci-deploy \
      --policy-name rentez-deploy \
      --policy-document file://aws/iam/ci-deploy-policy.json
