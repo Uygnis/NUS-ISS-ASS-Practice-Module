@@ -268,11 +268,16 @@ VPC. The stacks around it are the part that does not yet duplicate:
 - `10-persistent.yaml` hardcodes `BucketName: rentez-frontend-${AWS::AccountId}`
   and `rentez-backups-${AWS::AccountId}`. Bucket names are globally unique, so a
   second stack fails to create them.
-- It also declares thirteen `Export:` names (`rentez-vpc-id`, `rentez-app-url`
-  and so on). Export names are unique per account per region, so a second stack
-  collides on every one.
+- It also declares twelve `Export:` names. Export names are unique per account
+  per region, so a second stack collides on every one. They divide cleanly,
+  which is the key to the fix: `rentez-vpc-id`, `-public-subnets`,
+  `-private-subnets`, `-alb-sg`, `-rds-sg`, `-db-subnet-group`,
+  `-db-parameter-group` and `-ecr-registry` describe the *account* and should
+  stay single, while `rentez-frontend-bucket`, `-backup-bucket`,
+  `-distribution-id` and `-app-url` describe one *environment* and are what
+  needs to exist per environment.
 - `20-database.yaml` hardcodes `DBInstanceIdentifier: rentez-postgres` and two
-  more exports.
+  more exports (`rentez-db-endpoint`, `rentez-db-port`).
 - Five ECR repository names, three DynamoDB tables and two SQS queues are
   likewise fixed.
 

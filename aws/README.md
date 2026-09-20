@@ -252,9 +252,9 @@ is nothing to leak.
    sets none of them deploys to the original single `rentez` environment.
 
    **A second `PERSISTENT_STACK` / `DATABASE_STACK` does not create yet.** Both
-   templates hardcode bucket names, a DB identifier and fifteen CloudFormation
-   export names, all of which are unique per account, so the second stack fails
-   on every one. A second *cluster* is fine — `eksctl` reuses the VPC the
+   templates hardcode bucket names, a DB identifier and fourteen CloudFormation
+   export names (twelve here, two in the database stack), all of which are
+   unique per account, so the second stack fails on every one. A second *cluster* is fine — `eksctl` reuses the VPC the
    persistent stack exports. Until the templates take an `EnvironmentName`
    parameter, split `CLUSTER_NAME` and `NAMESPACE` only and leave both
    Environments pointing at the same stacks; the backends separate, the frontend
