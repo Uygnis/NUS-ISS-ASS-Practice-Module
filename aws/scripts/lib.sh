@@ -10,6 +10,11 @@ CLUSTER_NAME="${CLUSTER_NAME:-rentez}"
 # environment. See aws/cloudformation/ and issue #41. ACCOUNT_STACK is
 # deliberately not per-environment - it holds the VPC and ECR, which every
 # environment in the account shares.
+# Whether these were chosen by the caller or defaulted here. adopt_legacy_stack
+# below falls back to the pre-split stack only for the ones nobody asked for, so
+# an explicit ACCOUNT_STACK=... is never quietly overridden.
+ACCOUNT_STACK_EXPLICIT="${ACCOUNT_STACK:+1}"
+ENVIRONMENT_STACK_EXPLICIT="${ENVIRONMENT_STACK:+1}"
 ACCOUNT_STACK="${ACCOUNT_STACK:-rentez-account}"
 
 # The pre-split stack, which held everything. It is still what exists in any
@@ -124,6 +129,33 @@ stack_status() {
 }
 
 stack_exists() { [ "$(stack_status "$1")" != "MISSING" ]; }
+
+# ------------------------------------------------- adopting the pre-split stack
+# An account bootstrapped before the split runs on one rentez-persistent stack,
+# which publishes every output the two new stacks publish between them. The
+# defaults above name the new stacks, so on such an account every read-only
+# script reports MISSING and tells the reader to bootstrap an account that is
+# in fact running - which is how `make aws-status` came to say "Not bootstrapped
+# in this account yet" about a live environment with a cluster, a database and
+# five services in it.
+#
+# The documented workaround is to export both names by hand (aws/README.md,
+# "Adopting an account bootstrapped before the split"). That is fine for a
+# deploy, where being explicit about the target is the point, and wrong for a
+# status command, whose entire job is to tell you what is there.
+#
+# Read-only scripts therefore call this first. It only ever substitutes a stack
+# that EXISTS for one that does not, and only when the caller did not name one.
+adopt_legacy_stack() {
+	stack_exists "$LEGACY_STACK" || return 0
+
+	if [ -z "$ACCOUNT_STACK_EXPLICIT" ] && ! stack_exists "$ACCOUNT_STACK"; then
+		ACCOUNT_STACK="$LEGACY_STACK"
+	fi
+	if [ -z "$ENVIRONMENT_STACK_EXPLICIT" ] && ! stack_exists "$ENVIRONMENT_STACK"; then
+		ENVIRONMENT_STACK="$LEGACY_STACK"
+	fi
+}
 
 # Read one Output from a stack. Fails loudly rather than returning an empty
 # string, because an empty registry or subnet id fails much later and much more
