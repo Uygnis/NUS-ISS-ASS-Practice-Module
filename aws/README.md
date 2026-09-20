@@ -203,14 +203,23 @@ is nothing to leak.
 1. **OIDC provider** — the commands are in the header of
    `.github/workflows/deploy.yml`.
 
-2. **One role**, trusting only this repository through that provider, with the
-   policy in `aws/iam/ci-deploy-policy.json`:
+2. **One role**, with both policies from `aws/iam/`. The trust policy says who
+   may assume it, the permissions policy what it may then do — `create-role`
+   requires the first and has no default:
 
    ```bash
+   # Substitute <ACCOUNT_ID> in ci-trust-policy.json first.
+   aws iam create-role --role-name rentez-ci-deploy \
+     --assume-role-policy-document file://aws/iam/ci-trust-policy.json
+
    aws iam put-role-policy --role-name rentez-ci-deploy \
      --policy-name rentez-deploy \
      --policy-document file://aws/iam/ci-deploy-policy.json
    ```
+
+   The trust policy admits any run from this repository, which is what lets the
+   whole team press the deploy button against one shared account. The flip side
+   is that repository write access is effectively deploy access to that account.
 
    Both jobs assume it. Be aware that it is cluster-admin on EKS — which is why
    the policy is scoped statement by statement rather than reaching for
@@ -224,6 +233,42 @@ is nothing to leak.
    |---|---|
    | `AWS_DEPLOY_ROLE_ARN` | the role from step 2 |
    | `AWS_REGION` | `ap-southeast-1` |
+
+   These are repository-wide because the account is shared: every deploy, from
+   whoever presses the button, assumes the same role.
+
+3b. **One GitHub Environment per deployment target** (Settings → Environments).
+   The Environment decides *where inside the account* a run deploys, so that a
+   merge to `dev` and a merge to `main` stop overwriting each other:
+
+   | Variable | `dev` | `prod` |
+   |---|---|---|
+   | `CLUSTER_NAME` | `rentez-dev` | `rentez-prod` |
+   | `NAMESPACE` | `rentez-dev` | `rentez-prod` |
+   | `PERSISTENT_STACK` | `rentez-persistent-dev` | `rentez-persistent-prod` |
+   | `DATABASE_STACK` | `rentez-database-dev` | `rentez-database-prod` |
+
+   Every one of these defaults in `aws/scripts/lib.sh`, so an Environment that
+   sets none of them deploys to the original single `rentez` environment.
+
+   **A second `PERSISTENT_STACK` / `DATABASE_STACK` does not create yet.** Both
+   templates hardcode bucket names, a DB identifier and fourteen CloudFormation
+   export names (twelve here, two in the database stack), all of which are
+   unique per account, so the second stack fails on every one. A second *cluster* is fine — `eksctl` reuses the VPC the
+   persistent stack exports. Until the templates take an `EnvironmentName`
+   parameter, split `CLUSTER_NAME` and `NAMESPACE` only and leave both
+   Environments pointing at the same stacks; the backends separate, the frontend
+   bucket and CloudFront URL stay shared. `docs/aws-team-setup.md` lists exactly
+   what needs parameterising.
+
+   Bring each cluster up with the same names it is configured with:
+
+   ```bash
+   CLUSTER_NAME=rentez-dev NAMESPACE=rentez-dev \
+     PERSISTENT_STACK=rentez-persistent-dev DATABASE_STACK=rentez-database-dev \
+     CI_ROLE_ARN=arn:aws:iam::<account>:role/rentez-ci-deploy \
+     make aws-up
+   ```
 
 4. **Give the role access to the cluster.** IAM permission is not cluster
    permission: `eksctl` makes only the creating principal a cluster admin, so

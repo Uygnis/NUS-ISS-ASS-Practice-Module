@@ -21,7 +21,7 @@
         "cloudformation:DescribeStackEvents",
         "cloudformation:UpdateStack"
       ],
-      "Resource": "arn:aws:cloudformation:*:*:stack/rentez-persistent/*"
+      "Resource": "arn:aws:cloudformation:*:*:stack/rentez-persistent*/*"
     },
     {
       "Sid": "PersistentStackIamAndResources",

@@ -186,14 +186,25 @@ aws iam create-open-id-connect-provider \
 
 ### Step 2: Create the CI role
 
-Create role `rentez-ci-deploy` trusting **only this repository** through that
-provider, then:
+The role needs two policies: a *trust* policy saying who may assume it, and a
+*permissions* policy saying what it may then do. Both are in `aws/iam/`, and
+`create-role` requires the first — it has no default, which is why this step
+previously could not be completed from the repo alone.
 
 ```bash
+# Substitute <ACCOUNT_ID> in ci-trust-policy.json first.
+aws iam create-role --role-name rentez-ci-deploy \
+  --assume-role-policy-document file://aws/iam/ci-trust-policy.json
+
 aws iam put-role-policy --role-name rentez-ci-deploy \
   --policy-name rentez-deploy \
   --policy-document file://aws/iam/ci-deploy-policy.json
 ```
+
+The trust policy admits any run from this repository. That is deliberate — the
+account is shared, so anyone on the team can press the deploy button without an
+AWS account of their own. It also means repository write access is effectively
+deploy access to this account.
 
 This role is cluster-admin on EKS, which is why the policy is scoped statement
 by statement rather than using `AdministratorAccess`.
@@ -208,6 +219,30 @@ of these are sensitive, and there are deliberately no long-lived AWS keys):
 | `AWS_DEPLOY_ROLE_ARN` | the role from Step 2 |
 | `AWS_REGION` | `ap-southeast-1` |
 
+Repository-wide, because the account is shared: every deploy assumes the same
+role regardless of who triggered it.
+
+### Step 3b: One GitHub Environment per deployment target
+
+Settings → **Environments**. The Environment does not choose an account — there
+is only one — it chooses *where inside it* a run deploys, so that a merge to
+`dev` and a merge to `main` stop landing on top of each other. `dev.yml` and
+`prod.yml` pass `dev` and `prod` automatically; typing a name into Run workflow
+picks one by hand.
+
+| Variable | `dev` | `prod` |
+|---|---|---|
+| `CLUSTER_NAME` | `rentez-dev` | `rentez-prod` |
+| `NAMESPACE` | `rentez-dev` | `rentez-prod` |
+| `PERSISTENT_STACK` | `rentez-persistent-dev` | `rentez-persistent-prod` |
+| `DATABASE_STACK` | `rentez-database-dev` | `rentez-database-prod` |
+
+Each of these defaults in `aws/scripts/lib.sh`, so an Environment that sets none
+of them deploys to the original single `rentez` environment and nothing changes.
+
+**The persistent and database stacks cannot simply be duplicated yet.** See
+"Two environments in one account" below before creating the second set.
+
 ### Step 4: Grant the role cluster access
 
 **IAM permission is not cluster permission.** `eksctl` grants admin only to the
@@ -216,8 +251,41 @@ as well. `make aws-up` creates one when told the role ARN:
 
 ```bash
 export CI_ROLE_ARN=arn:aws:iam::<shared-account-id>:role/rentez-ci-deploy
-make aws-up
+CLUSTER_NAME=rentez-dev NAMESPACE=rentez-dev \
+  PERSISTENT_STACK=rentez-persistent-dev DATABASE_STACK=rentez-database-dev \
+  make aws-up
 ```
+
+Once per cluster — two environments means running this twice, each with its own
+names.
+
+### Two environments in one account
+
+A second EKS cluster is only a `CLUSTER_NAME` away: `eksctl` reuses the VPC and
+subnets exported by the persistent stack, so a second cluster costs no second
+VPC. The stacks around it are the part that does not yet duplicate:
+
+- `10-persistent.yaml` hardcodes `BucketName: rentez-frontend-${AWS::AccountId}`
+  and `rentez-backups-${AWS::AccountId}`. Bucket names are globally unique, so a
+  second stack fails to create them.
+- It also declares twelve `Export:` names. Export names are unique per account
+  per region, so a second stack collides on every one. They divide cleanly,
+  which is the key to the fix: `rentez-vpc-id`, `-public-subnets`,
+  `-private-subnets`, `-alb-sg`, `-rds-sg`, `-db-subnet-group`,
+  `-db-parameter-group` and `-ecr-registry` describe the *account* and should
+  stay single, while `rentez-frontend-bucket`, `-backup-bucket`,
+  `-distribution-id` and `-app-url` describe one *environment* and are what
+  needs to exist per environment.
+- `20-database.yaml` hardcodes `DBInstanceIdentifier: rentez-postgres` and two
+  more exports (`rentez-db-endpoint`, `rentez-db-port`).
+- Five ECR repository names, three DynamoDB tables and two SQS queues are
+  likewise fixed.
+
+Giving both templates an `EnvironmentName` parameter and threading it through
+those names is what a genuine two-environment split needs. Until that is done,
+point both Environments at the same `PERSISTENT_STACK` and `DATABASE_STACK` and
+split only `CLUSTER_NAME` and `NAMESPACE`: the backends separate, while the
+frontend bucket and CloudFront URL stay shared and the later deploy wins.
 
 This must be set **every time the cluster is created**, because the cluster is
 ephemeral. Put the export in the shared account's shell profile and forget it.
