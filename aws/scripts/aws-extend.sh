@@ -25,7 +25,7 @@ HOURS="${HOURS:-4}"
 
 require_tools aws python3
 require_credentials
-require_persistent_stack
+require_account_stack
 
 # Refuse on an empty account. Arming the reaper with nothing to reap would leave
 # a deadline ticking against no resources, and `aws-status` would then show a

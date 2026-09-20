@@ -9,7 +9,7 @@
 # after a failure and it picks up from wherever it stopped.
 #
 # From here the environment costs about $0.21/hour. The lease is what stops that
-# becoming $155/month — see the reaper in 10-persistent.yaml.
+# becoming $155/month — see the reaper in 15-environment.yaml.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -18,24 +18,24 @@ TAG="${TAG:-}"
 
 require_tools aws eksctl kubectl helm python3
 require_credentials
-require_persistent_stack
+require_account_stack
 
 # Only what the INFRASTRUCTURE half needs. The registry, the ALB security group,
 # the frontend bucket and the distribution are read by aws-deploy.sh instead,
 # out of the same stack — so neither script depends on the other's variables.
-VPC_ID="$(stack_output "$PERSISTENT_STACK" VpcId)"
-RDS_SG="$(stack_output "$PERSISTENT_STACK" RdsSecurityGroupId)"
-APP_URL="$(stack_output "$PERSISTENT_STACK" AppUrl)"
+VPC_ID="$(stack_output "$ACCOUNT_STACK" VpcId)"
+RDS_SG="$(stack_output "$ACCOUNT_STACK" RdsSecurityGroupId)"
+APP_URL="$(stack_output "$ENVIRONMENT_STACK" AppUrl)"
 
 # Assigned to a plain variable FIRST, deliberately. stack_output aborts with
 # `die` on a missing output, but inside a herestring that exit only kills the
 # subshell - `set -e` does not see it, and the script would carry on with empty
 # subnet ids and fail ten minutes later inside eksctl.
-PUBLIC_SUBNETS="$(stack_output "$PERSISTENT_STACK" PublicSubnetIds)"
-PRIVATE_SUBNETS="$(stack_output "$PERSISTENT_STACK" PrivateSubnetIds)"
+PUBLIC_SUBNETS="$(stack_output "$ACCOUNT_STACK" PublicSubnetIds)"
+PRIVATE_SUBNETS="$(stack_output "$ACCOUNT_STACK" PrivateSubnetIds)"
 IFS=',' read -r PUBLIC_SUBNET_A PUBLIC_SUBNET_B <<<"$PUBLIC_SUBNETS"
 IFS=',' read -r PRIVATE_SUBNET_A PRIVATE_SUBNET_B <<<"$PRIVATE_SUBNETS"
-export VPC_ID PUBLIC_SUBNET_A PUBLIC_SUBNET_B PRIVATE_SUBNET_A PRIVATE_SUBNET_B AWS_REGION AWS_ACCOUNT_ID
+export VPC_ID PUBLIC_SUBNET_A PUBLIC_SUBNET_B PRIVATE_SUBNET_A PRIVATE_SUBNET_B AWS_REGION AWS_ACCOUNT_ID CLUSTER_NAME
 
 # The image tag defaults to the current commit, which is what CI tagged. Refuse
 # to guess: deploying a tag that was never built fails 10 minutes later with
@@ -261,6 +261,25 @@ ok "config and secrets applied"
 # RDS has no /docker-entrypoint-initdb.d, so the schemas and roles that Postgres
 # creates automatically in Docker have to be applied by hand exactly once. Same
 # file, both environments.
+# CREATE DATABASE cannot run while connected to its own target, so this one
+# statement goes to the instance's default `rentez` database. Skipped when this
+# environment uses that database, which is the pre-split default.
+if [ "$DB_NAME" != "rentez" ]; then
+	say "creating database $DB_NAME"
+	CREATE_DB=$(mktemp)
+	cat > "$CREATE_DB" <<-CREATEEOF
+	set -e
+	if psql -tAc "SELECT 1 FROM pg_database WHERE datname = '$DB_NAME'" | grep -q 1; then
+	  echo "database $DB_NAME already exists"
+	else
+	  psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$DB_NAME\" OWNER rentez_admin"
+	  echo "created database $DB_NAME"
+	fi
+	CREATEEOF
+	run_db_pod rentez-db-create "$CREATE_DB" rentez || die "could not create database $DB_NAME"
+	rm -f "$CREATE_DB"
+fi
+
 say "creating schemas and roles"
 BOOTSTRAP_SQL=$(mktemp)
 {
@@ -289,7 +308,7 @@ rm -f "$BOOTSTRAP_SQL" "$RUNNER"
 
 # Restore the newest dump if there is one. Otherwise Flyway plus the seed
 # profile build a fresh world when the services start.
-BACKUP_BUCKET="$(stack_output "$PERSISTENT_STACK" BackupBucketName)"
+BACKUP_BUCKET="$(stack_output "$ENVIRONMENT_STACK" BackupBucketName)"
 # `|| true` is load-bearing: `aws s3 ls` exits 1 when a prefix matches nothing,
 # and under `set -euo pipefail` that kills the script mid-assignment with no
 # message at all. It bites every freshly bootstrapped account, which has no

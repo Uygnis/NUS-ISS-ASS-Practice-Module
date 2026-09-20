@@ -245,27 +245,29 @@ is nothing to leak.
    |---|---|---|
    | `CLUSTER_NAME` | `rentez-dev` | `rentez-prod` |
    | `NAMESPACE` | `rentez-dev` | `rentez-prod` |
-   | `PERSISTENT_STACK` | `rentez-persistent-dev` | `rentez-persistent-prod` |
-   | `DATABASE_STACK` | `rentez-database-dev` | `rentez-database-prod` |
+   | `ENVIRONMENT_STACK` | `rentez-environment-dev` | `rentez-environment-prod` |
+   | `ENVIRONMENT_NAME` | `dev` | `prod` |
+   | `DB_NAME` | `rentez_dev` | `rentez_prod` |
+
+   `ACCOUNT_STACK` stays unset: one per account, shared by every environment,
+   holding the VPC and the ECR repositories.
 
    Every one of these defaults in `aws/scripts/lib.sh`, so an Environment that
    sets none of them deploys to the original single `rentez` environment.
 
-   **A second `PERSISTENT_STACK` / `DATABASE_STACK` does not create yet.** Both
-   templates hardcode bucket names, a DB identifier and fourteen CloudFormation
-   export names (twelve here, two in the database stack), all of which are
-   unique per account, so the second stack fails on every one. A second *cluster* is fine — `eksctl` reuses the VPC the
-   persistent stack exports. Until the templates take an `EnvironmentName`
-   parameter, split `CLUSTER_NAME` and `NAMESPACE` only and leave both
-   Environments pointing at the same stacks; the backends separate, the frontend
-   bucket and CloudFront URL stay shared. `docs/aws-team-setup.md` lists exactly
-   what needs parameterising.
+   Each environment gets its own frontend bucket, CloudFront distribution and
+   URL, because `15-environment.yaml` takes an `EnvironmentName` that suffixes
+   every name and export which has to be unique per account. It shares the VPC
+   and the ECR repositories through `10-account.yaml`, and shares the RDS
+   *instance* while using its own *database* — a second instance would be a
+   second hourly bill for isolation the database already provides.
 
    Bring each cluster up with the same names it is configured with:
 
    ```bash
    CLUSTER_NAME=rentez-dev NAMESPACE=rentez-dev \
-     PERSISTENT_STACK=rentez-persistent-dev DATABASE_STACK=rentez-database-dev \
+     ENVIRONMENT_STACK=rentez-environment-dev ENVIRONMENT_NAME=dev \
+     DB_NAME=rentez_dev \
      CI_ROLE_ARN=arn:aws:iam::<account>:role/rentez-ci-deploy \
      make aws-up
    ```
@@ -402,6 +404,64 @@ above); until then use `make aws-images` to build and `make aws-deploy` to
 deploy, both of which run against whichever account you are authenticated to.
 
 ---
+
+## Adopting an account bootstrapped before the split
+
+`10-persistent.yaml` used to hold everything. It is now split into
+`10-account.yaml` (one per account: VPC, security groups, ECR) and
+`15-environment.yaml` (one per environment: buckets, CloudFront, DynamoDB, SQS,
+reaper). An account created before that split has a single `rentez-persistent`
+stack instead.
+
+**No migration is needed, and none should be attempted.** That stack publishes
+all twelve outputs the two new stacks publish between them, under the same
+names. Pointing both variables at it adopts the environment exactly as it
+stands — same buckets, same CloudFront distribution, same URL:
+
+```bash
+export ACCOUNT_STACK=rentez-persistent ENVIRONMENT_STACK=rentez-persistent
+```
+
+Set those two on the GitHub Environment as well, and the deploy workflow uses
+the same environment.
+
+### Adding a second environment beside it
+
+The environment template is self-contained — it references nothing in the
+account stack — so a new environment is one new stack. Keep the legacy stack as
+the account stack, because that is where the VPC and the ECR repositories live:
+
+```bash
+export ACCOUNT_STACK=rentez-persistent
+export ENVIRONMENT_STACK=rentez-environment-dev ENVIRONMENT_NAME=dev
+export CLUSTER_NAME=rentez-dev NAMESPACE=rentez-dev DB_NAME=rentez_dev
+make aws-bootstrap    # creates only the new environment stack
+make aws-up           # second cluster in the shared VPC, own database
+```
+
+`make aws-bootstrap` refuses to run without these when it finds a legacy stack,
+rather than building a second VPC and then failing on bucket names that already
+exist.
+
+### Retiring the legacy stack, eventually
+
+Only worth doing to get the account onto `10-account.yaml` proper; nothing else
+depends on it. The route is CloudFormation resource import: set
+`DeletionPolicy: Retain` on the live stack's resources, remove them from its
+template so they are orphaned rather than deleted, then adopt them into the new
+stacks with `--change-set-type IMPORT`.
+
+Two things to establish before starting, neither of which is settled here:
+
+- **Not every resource type can be imported.** Check each type in this stack
+  against the CloudFormation resource-import support table first; anything
+  unsupported has to be recreated, which for the CloudFront distribution would
+  mean a new URL.
+- **Exports cannot be removed while another stack imports them.** That is not
+  currently a constraint, because the database stack only exists while an
+  environment is up — `aws cloudformation list-imports` reported no importers
+  for any of the twelve. It becomes one the moment someone runs `make aws-up`,
+  so the work has to happen with the environment down.
 
 ## Things that will bite
 

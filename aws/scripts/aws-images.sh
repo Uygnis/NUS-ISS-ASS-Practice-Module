@@ -13,9 +13,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 require_tools aws docker git
 require_credentials
-require_persistent_stack
+require_account_stack
 
-REGISTRY="$(stack_output "$PERSISTENT_STACK" EcrRegistry)"
+REGISTRY="$(stack_output "$ACCOUNT_STACK" EcrRegistry)"
 TAG="${TAG:-$(git -C "$REPO_ROOT" rev-parse --short=7 HEAD)}"
 
 say "registry $REGISTRY"

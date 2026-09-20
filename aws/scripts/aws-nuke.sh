@@ -19,13 +19,13 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require_tools aws eksctl kubectl
 require_credentials
 
-if ! stack_exists "$PERSISTENT_STACK"; then
-	ok "nothing to remove — the persistent stack does not exist"
+if ! stack_exists "$ENVIRONMENT_STACK" && ! stack_exists "$ACCOUNT_STACK"; then
+	ok "nothing to remove — neither stack exists"
 	exit 0
 fi
 
-BACKUP_BUCKET="$(stack_output "$PERSISTENT_STACK" BackupBucketName)"
-FRONTEND_BUCKET="$(stack_output "$PERSISTENT_STACK" FrontendBucketName)"
+BACKUP_BUCKET="$(stack_output "$ENVIRONMENT_STACK" BackupBucketName)"
+FRONTEND_BUCKET="$(stack_output "$ENVIRONMENT_STACK" FrontendBucketName)"
 DUMPS="$(aws s3 ls "s3://$BACKUP_BUCKET/dumps/" 2>/dev/null | wc -l | tr -d ' ' || true)"
 DUMPS="${DUMPS:-0}"
 
@@ -83,11 +83,27 @@ print(json.dumps(d) if d.get("Objects") else "")' > /tmp/rentez-markers.json 2>/
 done
 rm -f /tmp/rentez-versions.json /tmp/rentez-markers.json
 
-step "Deleting the persistent stack"
+# The environment stack first, then the account stack. Not interchangeable:
+# the account stack holds the VPC and security groups that the environment's
+# resources sit inside, and CloudFormation refuses to delete a VPC while
+# anything is still in it.
+step "Deleting the environment stack"
 say "CloudFront takes several minutes to disable and delete"
-aws cloudformation delete-stack --stack-name "$PERSISTENT_STACK"
-aws cloudformation wait stack-delete-complete --stack-name "$PERSISTENT_STACK" \
+aws cloudformation delete-stack --stack-name "$ENVIRONMENT_STACK"
+aws cloudformation wait stack-delete-complete --stack-name "$ENVIRONMENT_STACK" \
 	|| warn "delete did not complete — check the CloudFormation console for the reason"
+
+# ONLY when this was the last environment. Deleting the account stack takes the
+# VPC and all five ECR repositories with it, which would break every other
+# environment in the account.
+if [ -n "${KEEP_ACCOUNT_STACK:-}" ]; then
+	warn "keeping $ACCOUNT_STACK (KEEP_ACCOUNT_STACK set)"
+else
+	step "Deleting the account stack"
+	aws cloudformation delete-stack --stack-name "$ACCOUNT_STACK"
+	aws cloudformation wait stack-delete-complete --stack-name "$ACCOUNT_STACK" \
+		|| warn "delete did not complete — check the CloudFormation console for the reason"
+fi
 
 step "Deleting secrets"
 for name in /rentez/jwt-secret /rentez/db/master-password \

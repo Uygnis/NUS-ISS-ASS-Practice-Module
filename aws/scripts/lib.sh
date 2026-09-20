@@ -5,10 +5,35 @@ set -euo pipefail
 
 # ------------------------------------------------------------------ constants
 CLUSTER_NAME="${CLUSTER_NAME:-rentez}"
-PERSISTENT_STACK="${PERSISTENT_STACK:-rentez-persistent}"
+
+# The old rentez-persistent stack is now two: one per account, one per
+# environment. See aws/cloudformation/ and issue #41. ACCOUNT_STACK is
+# deliberately not per-environment - it holds the VPC and ECR, which every
+# environment in the account shares.
+ACCOUNT_STACK="${ACCOUNT_STACK:-rentez-account}"
+
+# The pre-split stack, which held everything. It is still what exists in any
+# account bootstrapped before the split, and it publishes all twelve outputs
+# the two new stacks publish between them - so pointing both ACCOUNT_STACK and
+# ENVIRONMENT_STACK at it adopts that environment as it stands, with no
+# migration and no change to the CloudFront URL. See "Adopting an account
+# bootstrapped before the split" in aws/README.md.
+LEGACY_STACK="${LEGACY_STACK:-rentez-persistent}"
+ENVIRONMENT_STACK="${ENVIRONMENT_STACK:-rentez-environment}"
 DATABASE_STACK="${DATABASE_STACK:-rentez-database}"
 GUARDRAILS_STACK="${GUARDRAILS_STACK:-rentez-guardrails}"
 NAMESPACE="${NAMESPACE:-rentez}"
+
+# Which database inside the one RDS instance this environment uses. The services
+# separate themselves by schema inside it (db/init/01-schemas.sql), so a second
+# environment needs a second database rather than a second instance - which is
+# the difference between a few cents and a second hourly bill.
+DB_NAME="${DB_NAME:-rentez}"
+
+# EnvironmentName passed to 15-environment.yaml. Empty means the original
+# unsuffixed resource names, so the pre-split environment is adopted rather
+# than rebuilt.
+ENVIRONMENT_NAME="${ENVIRONMENT_NAME:-}"
 SERVICES=(account-service catalog-service reservation-service payment-service notification-service)
 
 # Pod image used for every one-off database task. Chosen so that no custom image
@@ -64,8 +89,8 @@ stack_output() {
 	printf '%s' "$value"
 }
 
-require_persistent_stack() {
-	stack_exists "$PERSISTENT_STACK" \
+require_account_stack() {
+	stack_exists "$ACCOUNT_STACK" \
 		|| die "the persistent stack is missing. Run 'make aws-bootstrap' once per account first."
 }
 
@@ -87,13 +112,16 @@ cluster_exists() {
 # pod spec. That is not fussiness: a dump command contains quotes, dollars and
 # newlines, and embedding it in `kubectl run --overrides` JSON mangles it in
 # ways that surface as a half-written backup rather than an error.
+# run_db_pod <name> <script> [database]
+# The database defaults to this environment's DB_NAME. It is passed explicitly
+# only to CREATE DATABASE, which cannot run while connected to its own target.
 run_db_pod() {
-	local name="$1" script="$2"
+	local name="$1" script="$2" database="${3:-$DB_NAME}"
 	local db_host db_pass bucket
 	db_host="$(stack_output "$DATABASE_STACK" DbEndpoint)"
 	db_pass="$(aws ssm get-parameter --name /rentez/db/master-password \
 		--with-decryption --query Parameter.Value --output text)"
-	bucket="$(stack_output "$PERSISTENT_STACK" BackupBucketName)"
+	bucket="$(stack_output "$ENVIRONMENT_STACK" BackupBucketName)"
 
 	kubectl create configmap "$name-script" --namespace "$NAMESPACE" \
 		--from-file=run.sh="$script" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
@@ -123,7 +151,7 @@ run_db_pod() {
 	        - name: PGUSER
 	          value: "rentez_admin"
 	        - name: PGDATABASE
-	          value: "rentez"
+	          value: "$database"
 	        - name: PGPASSWORD
 	          valueFrom:
 	            secretKeyRef: { name: $name-creds, key: PGPASSWORD }

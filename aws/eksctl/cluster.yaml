@@ -24,7 +24,9 @@ apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
 
 metadata:
-  name: rentez
+  # Substituted, not fixed: a second environment means a second cluster in the
+  # same account, and two clusters cannot share a name.
+  name: "${CLUSTER_NAME}"
   region: "${AWS_REGION}"
   # 1.31+ so the in-tree cloud provider removals and the current AWS Load
   # Balancer Controller are both settled. Pin it: an unpinned version means two
