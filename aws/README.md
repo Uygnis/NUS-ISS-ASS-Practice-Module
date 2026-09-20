@@ -245,27 +245,29 @@ is nothing to leak.
    |---|---|---|
    | `CLUSTER_NAME` | `rentez-dev` | `rentez-prod` |
    | `NAMESPACE` | `rentez-dev` | `rentez-prod` |
-   | `PERSISTENT_STACK` | `rentez-persistent-dev` | `rentez-persistent-prod` |
-   | `DATABASE_STACK` | `rentez-database-dev` | `rentez-database-prod` |
+   | `ENVIRONMENT_STACK` | `rentez-environment-dev` | `rentez-environment-prod` |
+   | `ENVIRONMENT_NAME` | `dev` | `prod` |
+   | `DB_NAME` | `rentez_dev` | `rentez_prod` |
+
+   `ACCOUNT_STACK` stays unset: one per account, shared by every environment,
+   holding the VPC and the ECR repositories.
 
    Every one of these defaults in `aws/scripts/lib.sh`, so an Environment that
    sets none of them deploys to the original single `rentez` environment.
 
-   **A second `PERSISTENT_STACK` / `DATABASE_STACK` does not create yet.** Both
-   templates hardcode bucket names, a DB identifier and fourteen CloudFormation
-   export names (twelve here, two in the database stack), all of which are
-   unique per account, so the second stack fails on every one. A second *cluster* is fine — `eksctl` reuses the VPC the
-   persistent stack exports. Until the templates take an `EnvironmentName`
-   parameter, split `CLUSTER_NAME` and `NAMESPACE` only and leave both
-   Environments pointing at the same stacks; the backends separate, the frontend
-   bucket and CloudFront URL stay shared. `docs/aws-team-setup.md` lists exactly
-   what needs parameterising.
+   Each environment gets its own frontend bucket, CloudFront distribution and
+   URL, because `15-environment.yaml` takes an `EnvironmentName` that suffixes
+   every name and export which has to be unique per account. It shares the VPC
+   and the ECR repositories through `10-account.yaml`, and shares the RDS
+   *instance* while using its own *database* — a second instance would be a
+   second hourly bill for isolation the database already provides.
 
    Bring each cluster up with the same names it is configured with:
 
    ```bash
    CLUSTER_NAME=rentez-dev NAMESPACE=rentez-dev \
-     PERSISTENT_STACK=rentez-persistent-dev DATABASE_STACK=rentez-database-dev \
+     ENVIRONMENT_STACK=rentez-environment-dev ENVIRONMENT_NAME=dev \
+     DB_NAME=rentez_dev \
      CI_ROLE_ARN=arn:aws:iam::<account>:role/rentez-ci-deploy \
      make aws-up
    ```

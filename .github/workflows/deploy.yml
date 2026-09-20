@@ -49,8 +49,10 @@ name: Rentez Deploy
 #               AWS_REGION            unless an environment overrides it
 #   Environment CLUSTER_NAME          e.g. rentez-dev / rentez-prod
 #               NAMESPACE             e.g. rentez-dev / rentez-prod
-#               PERSISTENT_STACK      e.g. rentez-persistent-dev / -prod
-#               DATABASE_STACK        e.g. rentez-database-dev / -prod
+#               ENVIRONMENT_STACK     e.g. rentez-environment-dev / -prod
+#               ENVIRONMENT_NAME      e.g. dev / prod - the suffix inside it
+#               DB_NAME               e.g. rentez_dev / rentez_prod
+#               ACCOUNT_STACK         normally unset: one per account
 #
 # Every one of those infrastructure names defaults in aws/scripts/lib.sh, so an
 # Environment that sets none of them deploys to the original single `rentez`
@@ -275,18 +277,21 @@ jobs:
           AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-1' }}
           CLUSTER_NAME: ${{ vars.CLUSTER_NAME }}
           NAMESPACE: ${{ vars.NAMESPACE }}
-          PERSISTENT_STACK: ${{ vars.PERSISTENT_STACK }}
+          ACCOUNT_STACK: ${{ vars.ACCOUNT_STACK }}
+          ENVIRONMENT_STACK: ${{ vars.ENVIRONMENT_STACK }}
+          ENVIRONMENT_NAME: ${{ vars.ENVIRONMENT_NAME }}
           DATABASE_STACK: ${{ vars.DATABASE_STACK }}
+          DB_NAME: ${{ vars.DB_NAME }}
         run: make aws-deploy TAG=${{ needs.build.outputs.short }}
 
       # The URL is per-environment now, so it is read from that environment's own
       # persistent stack rather than a hardcoded one.
       - name: Report
         env:
-          PERSISTENT_STACK: ${{ vars.PERSISTENT_STACK || 'rentez-persistent' }}
+          ENVIRONMENT_STACK: ${{ vars.ENVIRONMENT_STACK || 'rentez-environment' }}
           CLUSTER_NAME: ${{ vars.CLUSTER_NAME || 'rentez' }}
         run: |
-          URL=$(aws cloudformation describe-stacks --stack-name "$PERSISTENT_STACK" \
+          URL=$(aws cloudformation describe-stacks --stack-name "$ENVIRONMENT_STACK" \
                   --query "Stacks[0].Outputs[?OutputKey=='AppUrl'].OutputValue" --output text)
           {
             echo "Deployed \`${{ needs.build.outputs.short }}\` to **${{ inputs.environment }}**"
@@ -295,5 +300,5 @@ jobs:
             echo "|---|---|"
             echo "| URL | $URL |"
             echo "| Cluster | \`$CLUSTER_NAME\` |"
-            echo "| Stack | \`$PERSISTENT_STACK\` |"
+            echo "| Stack | \`$ENVIRONMENT_STACK\` |"
           } >> "$GITHUB_STEP_SUMMARY"

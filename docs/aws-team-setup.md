@@ -234,14 +234,17 @@ picks one by hand.
 |---|---|---|
 | `CLUSTER_NAME` | `rentez-dev` | `rentez-prod` |
 | `NAMESPACE` | `rentez-dev` | `rentez-prod` |
-| `PERSISTENT_STACK` | `rentez-persistent-dev` | `rentez-persistent-prod` |
-| `DATABASE_STACK` | `rentez-database-dev` | `rentez-database-prod` |
+| `ENVIRONMENT_STACK` | `rentez-environment-dev` | `rentez-environment-prod` |
+| `ENVIRONMENT_NAME` | `dev` | `prod` |
+| `DB_NAME` | `rentez_dev` | `rentez_prod` |
+
+`ACCOUNT_STACK` stays unset — one per account, shared by every environment.
 
 Each of these defaults in `aws/scripts/lib.sh`, so an Environment that sets none
 of them deploys to the original single `rentez` environment and nothing changes.
 
-**The persistent and database stacks cannot simply be duplicated yet.** See
-"Two environments in one account" below before creating the second set.
+See "Two environments in one account" below for what each environment gets of
+its own, and what it shares.
 
 ### Step 4: Grant the role cluster access
 
@@ -252,7 +255,8 @@ as well. `make aws-up` creates one when told the role ARN:
 ```bash
 export CI_ROLE_ARN=arn:aws:iam::<shared-account-id>:role/rentez-ci-deploy
 CLUSTER_NAME=rentez-dev NAMESPACE=rentez-dev \
-  PERSISTENT_STACK=rentez-persistent-dev DATABASE_STACK=rentez-database-dev \
+  ENVIRONMENT_STACK=rentez-environment-dev ENVIRONMENT_NAME=dev \
+  DB_NAME=rentez_dev \
   make aws-up
 ```
 
@@ -261,45 +265,26 @@ names.
 
 ### Two environments in one account
 
-A second EKS cluster is only a `CLUSTER_NAME` away: `eksctl` reuses the VPC and
-subnets exported by the persistent stack, so a second cluster costs no second
-VPC. The stacks around it are the part that does not yet duplicate:
+Each environment gets its own frontend bucket, CloudFront distribution, URL,
+DynamoDB tables and SQS queues, from its own `15-environment.yaml` stack. What
+it shares, through the single `10-account.yaml` stack, is the VPC and subnets,
+the security groups and the five ECR repositories — none of which benefit from
+duplication, and the shared VPC is what lets a second cluster cost no second
+NAT gateway.
 
-- `10-persistent.yaml` hardcodes `BucketName: rentez-frontend-${AWS::AccountId}`
-  and `rentez-backups-${AWS::AccountId}`. Bucket names are globally unique, so a
-  second stack fails to create them.
-- It also declares twelve `Export:` names. Export names are unique per account
-  per region, so a second stack collides on every one. They divide cleanly,
-  which is the key to the fix: `rentez-vpc-id`, `-public-subnets`,
-  `-private-subnets`, `-alb-sg`, `-rds-sg`, `-db-subnet-group`,
-  `-db-parameter-group` and `-ecr-registry` describe the *account* and should
-  stay single, while `rentez-frontend-bucket`, `-backup-bucket`,
-  `-distribution-id` and `-app-url` describe one *environment* and are what
-  needs to exist per environment.
-- `20-database.yaml` hardcodes `DBInstanceIdentifier: rentez-postgres` and two
-  more exports (`rentez-db-endpoint`, `rentez-db-port`).
-- Five ECR repository names, three DynamoDB tables and two SQS queues are
-  likewise fixed.
+The database is shared at the *instance* level and separate at the *database*
+level: `DB_NAME` gives each environment its own database inside the one RDS
+instance, with the five per-service schemas created in each by `make aws-up`. A
+second instance would be a second hourly bill for isolation the database
+already provides.
 
-Giving both templates an `EnvironmentName` parameter and threading it through
-those names is what a genuine two-environment split needs. Until that is done,
-point both Environments at the same `PERSISTENT_STACK` and `DATABASE_STACK` and
-split only `CLUSTER_NAME` and `NAMESPACE`: the backends separate, while the
-frontend bucket and CloudFront URL stay shared and the later deploy wins.
+`10-persistent.yaml` stays in the tree until the live stack is migrated off it,
+but nothing deploys it any more.
 
-This must be set **every time the cluster is created**, because the cluster is
-ephemeral. Put the export in the shared account's shell profile and forget it.
-
-Skip this and every deploy fails with:
-
-```
-error: You must be logged in to the server (Unauthorized)
-```
-
-which mentions neither IAM nor the missing access entry, and sends people
-looking at the OIDC trust policy for an afternoon.
-
----
+**Still open:** the subnets carry `kubernetes.io/cluster/${CLUSTER_NAME}` tags
+and `10-account.yaml` takes a single `ClusterName`, so a second cluster sharing
+the VPC needs that tag for both names — or the tag dropped in favour of the
+`kubernetes.io/role/elb` tags the load balancer controller actually uses.
 
 ## Troubleshooting
 
