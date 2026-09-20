@@ -397,6 +397,47 @@ Resources:
         SigningBehavior: always
         SigningProtocol: sigv4
 
+  # SPA ROUTING WITHOUT SWALLOWING API ERRORS.
+  #
+  # A React single-page app owns its own routing: a deep link to /bookings/42 is
+  # not an S3 object, and S3 answers 403 for it through OAC. This used to be
+  # handled with CustomErrorResponses mapping 403 and 404 to 200 /index.html.
+  #
+  # That was wrong, and the smoke test found it. CustomErrorResponses is
+  # DISTRIBUTION-LEVEL - CloudFront has no per-behavior override - so it also
+  # applied to /api/*, and every 403 and 404 the ALB produced reached the
+  # browser as `200 text/html`. A customer hitting an admin endpoint got a 200
+  # and a page of HTML instead of the 403 the service correctly returned, which
+  # makes `if (!res.ok)` dead code for those two statuses and would have been
+  # miserable to debug from the frontend.
+  #
+  # A viewer-request function on the DEFAULT behavior does the same job without
+  # the blast radius: /api/* has its own cache behavior, so this never runs for
+  # an API request, and the two origins keep their own error semantics.
+  SpaRouterFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "${ClusterName}-spa-router"
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Rewrite SPA deep links to /index.html so the client router takes over
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+            var request = event.request;
+            var uri = request.uri;
+
+            // Only the LAST segment is tested for an extension. Checking the
+            // whole path would send /v1.2/settings to index.html because of the
+            // dot in the directory name, and asset requests must reach S3
+            // untouched so a genuinely missing bundle still fails loudly.
+            var lastSegment = uri.substring(uri.lastIndexOf('/') + 1);
+            if (lastSegment.indexOf('.') === -1) {
+                request.uri = '/index.html';
+            }
+            return request;
+        }
+
   Distribution:
     Type: AWS::CloudFront::Distribution
     Properties:
@@ -431,6 +472,12 @@ Resources:
           # Managed-CachingOptimized
           CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
           AllowedMethods: [GET, HEAD, OPTIONS]
+          # Deliberately on THIS behavior only - see SpaRouterFunction. The
+          # /api/* behavior below has no function association, so API responses
+          # pass through with their real status codes.
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt SpaRouterFunction.FunctionMetadata.FunctionARN
         CacheBehaviors:
           - PathPattern: /api/*
             TargetOriginId: alb-api
@@ -445,18 +492,6 @@ Resources:
             # required, because the ALB routes on path and would otherwise see
             # the CloudFront hostname.
             OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
-        CustomErrorResponses:
-          # A React single-page app owns its own routing: a deep link to
-          # /bookings/42 is not an S3 object, and S3 answers 403 through OAC.
-          # Rewriting to index.html lets the client router take over.
-          - ErrorCode: 403
-            ResponseCode: 200
-            ResponsePagePath: /index.html
-            ErrorCachingMinTTL: 10
-          - ErrorCode: 404
-            ResponseCode: 200
-            ResponsePagePath: /index.html
-            ErrorCachingMinTTL: 10
       Tags:
         - { Key: Project, Value: rentez }
         - { Key: Layer, Value: persistent }
