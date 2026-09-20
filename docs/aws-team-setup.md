@@ -281,10 +281,14 @@ already provides.
 `10-persistent.yaml` stays in the tree until the live stack is migrated off it,
 but nothing deploys it any more.
 
-**Still open:** the subnets carry `kubernetes.io/cluster/${CLUSTER_NAME}` tags
-and `10-account.yaml` takes a single `ClusterName`, so a second cluster sharing
-the VPC needs that tag for both names — or the tag dropped in favour of the
-`kubernetes.io/role/elb` tags the load balancer controller actually uses.
+**Subnet tags, since this is easy to get wrong later.** The shared subnets carry
+`kubernetes.io/role/elb` and deliberately *no* `kubernetes.io/cluster/<name>`
+tag. The AWS Load Balancer Controller's rule is that if any cluster tag exists
+on a subnet but none names the cluster doing the lookup, the subnet is filtered
+out — so tagging these for one cluster would hide them from every other cluster
+in the account, and the ingress would fail with "unable to discover subnets".
+With no such tag the rule never fires and the role tag alone serves any number
+of clusters. Do not add one back per cluster.
 
 ## Troubleshooting
 

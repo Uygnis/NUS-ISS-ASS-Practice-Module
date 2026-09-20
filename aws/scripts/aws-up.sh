@@ -35,7 +35,7 @@ PUBLIC_SUBNETS="$(stack_output "$ACCOUNT_STACK" PublicSubnetIds)"
 PRIVATE_SUBNETS="$(stack_output "$ACCOUNT_STACK" PrivateSubnetIds)"
 IFS=',' read -r PUBLIC_SUBNET_A PUBLIC_SUBNET_B <<<"$PUBLIC_SUBNETS"
 IFS=',' read -r PRIVATE_SUBNET_A PRIVATE_SUBNET_B <<<"$PRIVATE_SUBNETS"
-export VPC_ID PUBLIC_SUBNET_A PUBLIC_SUBNET_B PRIVATE_SUBNET_A PRIVATE_SUBNET_B AWS_REGION AWS_ACCOUNT_ID
+export VPC_ID PUBLIC_SUBNET_A PUBLIC_SUBNET_B PRIVATE_SUBNET_A PRIVATE_SUBNET_B AWS_REGION AWS_ACCOUNT_ID CLUSTER_NAME
 
 # The image tag defaults to the current commit, which is what CI tagged. Refuse
 # to guess: deploying a tag that was never built fails 10 minutes later with

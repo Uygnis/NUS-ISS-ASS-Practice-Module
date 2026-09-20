@@ -96,11 +96,24 @@ Resources:
       Tags:
         - { Key: Name, Value: !Sub "${ClusterName}-public-a" }
         - { Key: Project, Value: rentez }
-        # The AWS Load Balancer Controller discovers subnets by these tags. Get
-        # them wrong and ingress creation fails with "unable to discover
-        # subnets", which reads like a permissions problem and is not.
+        # The AWS Load Balancer Controller discovers subnets by this tag. Get it
+        # wrong and ingress creation fails with "unable to discover subnets",
+        # which reads like a permissions problem and is not.
+        #
+        # DELIBERATELY NO PER-CLUSTER TAG, because this VPC is shared by every
+        # cluster in the account. The controller's rule is that if any cluster
+        # tag exists on a subnet but none of them names the cluster doing the
+        # lookup, the subnet is filtered out. One tag naming one cluster would
+        # therefore not merely be redundant for a second cluster - it would hide
+        # these subnets from it entirely, surfacing as "unable to discover
+        # subnets" on the ingress.
+        #
+        # With no such tag at all that rule never fires, and the role tag alone
+        # is enough for any number of clusters. Optional since controller
+        # v2.1.1, and the chart is unpinned. eksctl does not need it either:
+        # aws/eksctl/cluster.yaml supplies subnet IDs explicitly rather than
+        # discovering them.
         - { Key: kubernetes.io/role/elb, Value: "1" }
-        - { Key: !Sub "kubernetes.io/cluster/${ClusterName}", Value: shared }
 
   PublicSubnetB:
     Type: AWS::EC2::Subnet
@@ -112,8 +125,8 @@ Resources:
       Tags:
         - { Key: Name, Value: !Sub "${ClusterName}-public-b" }
         - { Key: Project, Value: rentez }
+        # See PublicSubnetA: no per-cluster tag, on purpose.
         - { Key: kubernetes.io/role/elb, Value: "1" }
-        - { Key: !Sub "kubernetes.io/cluster/${ClusterName}", Value: shared }
 
   # RDS only. Nothing here needs outbound internet, which is what makes losing
   # the NAT gateway painless.
