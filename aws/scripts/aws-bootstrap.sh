@@ -5,7 +5,8 @@
 #   make aws-bootstrap NOTIFY_EMAIL=you@u.nus.edu
 #
 # Safe to re-run: every step is either idempotent or explicitly skipped when the
-# resource already exists. Run it again after editing 10-persistent.yaml.
+# resource already exists. Run it again after editing 10-account.yaml or
+# 15-environment.yaml.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -57,8 +58,8 @@ for role in auth fleet booking payment notification; do
 	put_secret_if_absent "/rentez/db/${role}-password" gen_pw
 done
 
-# ---------------------------------------------------------------- persistent
-step "Persistent stack"
+# ------------------------------------------------- account and environment
+step "Account and environment stacks"
 say "looking up the CloudFront origin-facing prefix list"
 PREFIX_LIST="$(aws ec2 describe-managed-prefix-lists \
 	--filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing \
@@ -67,15 +68,30 @@ PREFIX_LIST="$(aws ec2 describe-managed-prefix-lists \
 	|| die "could not find the CloudFront prefix list in $AWS_REGION."
 ok "prefix list $PREFIX_LIST"
 
-say "deploying $PERSISTENT_STACK (CloudFront takes a few minutes on first create)"
+# The account stack first: the environment stack does not import from it, but
+# the cluster and database both do, and creating them in this order keeps the
+# failure modes in the obvious sequence.
+say "deploying $ACCOUNT_STACK (VPC, security groups, ECR)"
 aws cloudformation deploy \
-	--stack-name "$PERSISTENT_STACK" \
-	--template-file "$REPO_ROOT/aws/cloudformation/10-persistent.yaml" \
-	--capabilities CAPABILITY_IAM \
+	--stack-name "$ACCOUNT_STACK" \
+	--template-file "$REPO_ROOT/aws/cloudformation/10-account.yaml" \
 	--parameter-overrides "CloudFrontPrefixListId=$PREFIX_LIST" "ClusterName=$CLUSTER_NAME" \
 	--no-fail-on-empty-changeset >/dev/null
+ok "$ACCOUNT_STACK ready"
 
-APP_URL="$(stack_output "$PERSISTENT_STACK" AppUrl)"
+# One of these per environment. ENVIRONMENT_NAME empty keeps the original
+# unsuffixed resource names, so the environment that predates the split is
+# adopted rather than rebuilt.
+say "deploying $ENVIRONMENT_STACK (CloudFront takes a few minutes on first create)"
+aws cloudformation deploy \
+	--stack-name "$ENVIRONMENT_STACK" \
+	--template-file "$REPO_ROOT/aws/cloudformation/15-environment.yaml" \
+	--capabilities CAPABILITY_IAM \
+	--parameter-overrides "EnvironmentName=$ENVIRONMENT_NAME" "ClusterName=$CLUSTER_NAME" \
+	--no-fail-on-empty-changeset >/dev/null
+ok "$ENVIRONMENT_STACK ready"
+
+APP_URL="$(stack_output "$ENVIRONMENT_STACK" AppUrl)"
 
 step "Done"
 cat <<EOF
