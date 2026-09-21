@@ -9,7 +9,7 @@
 # after a failure and it picks up from wherever it stopped.
 #
 # From here the environment costs about $0.21/hour. The lease is what stops that
-# becoming $155/month — see the reaper in 10-persistent.yaml.
+# becoming $155/month — see the reaper in 15-environment.yaml.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -18,24 +18,24 @@ TAG="${TAG:-}"
 
 require_tools aws eksctl kubectl helm python3
 require_credentials
-require_persistent_stack
+require_account_stack
 
 # Only what the INFRASTRUCTURE half needs. The registry, the ALB security group,
 # the frontend bucket and the distribution are read by aws-deploy.sh instead,
 # out of the same stack — so neither script depends on the other's variables.
-VPC_ID="$(stack_output "$PERSISTENT_STACK" VpcId)"
-RDS_SG="$(stack_output "$PERSISTENT_STACK" RdsSecurityGroupId)"
-APP_URL="$(stack_output "$PERSISTENT_STACK" AppUrl)"
+VPC_ID="$(stack_output "$ACCOUNT_STACK" VpcId)"
+RDS_SG="$(stack_output "$ACCOUNT_STACK" RdsSecurityGroupId)"
+APP_URL="$(stack_output "$ENVIRONMENT_STACK" AppUrl)"
 
 # Assigned to a plain variable FIRST, deliberately. stack_output aborts with
 # `die` on a missing output, but inside a herestring that exit only kills the
 # subshell - `set -e` does not see it, and the script would carry on with empty
 # subnet ids and fail ten minutes later inside eksctl.
-PUBLIC_SUBNETS="$(stack_output "$PERSISTENT_STACK" PublicSubnetIds)"
-PRIVATE_SUBNETS="$(stack_output "$PERSISTENT_STACK" PrivateSubnetIds)"
+PUBLIC_SUBNETS="$(stack_output "$ACCOUNT_STACK" PublicSubnetIds)"
+PRIVATE_SUBNETS="$(stack_output "$ACCOUNT_STACK" PrivateSubnetIds)"
 IFS=',' read -r PUBLIC_SUBNET_A PUBLIC_SUBNET_B <<<"$PUBLIC_SUBNETS"
 IFS=',' read -r PRIVATE_SUBNET_A PRIVATE_SUBNET_B <<<"$PRIVATE_SUBNETS"
-export VPC_ID PUBLIC_SUBNET_A PUBLIC_SUBNET_B PRIVATE_SUBNET_A PRIVATE_SUBNET_B AWS_REGION AWS_ACCOUNT_ID
+export VPC_ID PUBLIC_SUBNET_A PUBLIC_SUBNET_B PRIVATE_SUBNET_A PRIVATE_SUBNET_B AWS_REGION AWS_ACCOUNT_ID CLUSTER_NAME
 
 # The image tag defaults to the current commit, which is what CI tagged. Refuse
 # to guess: deploying a tag that was never built fails 10 minutes later with
@@ -117,15 +117,61 @@ fi
 #
 # Conditional on CI_ROLE_ARN so that per-member accounts, which have no pipeline
 # pointed at them, are unaffected.
-if [ -n "${CI_ROLE_ARN:-}" ]; then
-	if eksctl create accessentry --cluster "$CLUSTER_NAME" --region "$AWS_REGION" \
-			--principal-arn "$CI_ROLE_ARN" \
-			--access-policy "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy,accessScope={type=cluster}" \
-			>/dev/null 2>&1; then
-		ok "granted cluster access to the CI role"
-	else
-		ok "CI role already has cluster access"
+#
+# LOOKED UP, NOT REMEMBERED. CI_ROLE_ARN used to be an environment variable and
+# nothing else, which made granting the pipeline access depend on whoever ran
+# this having exported it. Forget it once and the cluster comes up looking
+# perfect, and the next merge dies with the Unauthorized described above - the
+# exact failure the block below exists to prevent. So: if the variable is unset,
+# find the role. An account with no rentez-ci-deploy role has no pipeline
+# pointed at it and skips the whole block, which is the per-member case.
+CI_ROLE_NAME="${CI_ROLE_NAME:-rentez-ci-deploy}"
+if [ -z "${CI_ROLE_ARN:-}" ]; then
+	CI_ROLE_ARN="$(aws iam get-role --role-name "$CI_ROLE_NAME" \
+		--query Role.Arn --output text 2>/dev/null || true)"
+	# A plain `[ -n ... ] && say` would be the last command in this branch, and
+	# under `set -e` its false case exits the script - taking out exactly the
+	# per-member account this lookup is supposed to let through.
+	if [ -n "$CI_ROLE_ARN" ]; then
+		say "found $CI_ROLE_NAME, granting it cluster access"
 	fi
+fi
+
+# VIA THE AWS CLI, NOT eksctl. `eksctl create accessentry` takes the access
+# policy only from a config file - it has no --access-policy flag, and passing
+# one fails with "unknown flag". The previous version of this block did exactly
+# that, sent both streams to /dev/null, and reported the failure as "CI role
+# already has cluster access". The role never got access on any cluster this
+# built, and the first sign of it would have been a deploy dying with
+# "You must be logged in to the server (Unauthorized)".
+#
+# So: no output suppression here, and no branch that treats failure as success.
+# The two calls are separately idempotent - create-access-entry conflicts if the
+# entry exists, associate-access-policy is a safe no-op on repeat - so an
+# existing entry is tolerated while anything else is fatal.
+if [ -n "${CI_ROLE_ARN:-}" ]; then
+	ENTRY_ERR=""
+	if ! ENTRY_ERR="$(aws eks create-access-entry --cluster-name "$CLUSTER_NAME" \
+			--region "$AWS_REGION" --principal-arn "$CI_ROLE_ARN" 2>&1 >/dev/null)"; then
+		case "$ENTRY_ERR" in
+			*ResourceInUseException*) : ;;   # already there, which is fine
+			*) die "could not create the EKS access entry for $CI_ROLE_ARN:
+  $ENTRY_ERR" ;;
+		esac
+	fi
+
+	aws eks associate-access-policy --cluster-name "$CLUSTER_NAME" \
+		--region "$AWS_REGION" --principal-arn "$CI_ROLE_ARN" \
+		--policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
+		--access-scope type=cluster >/dev/null \
+		|| die "could not attach the cluster-admin access policy to $CI_ROLE_ARN."
+
+	# Confirm rather than assume, because this is the failure that surfaces far
+	# away from its cause.
+	aws eks list-access-entries --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" \
+		--query 'accessEntries' --output text | grep -qF "$CI_ROLE_ARN" \
+		|| die "the access entry for $CI_ROLE_ARN is still not listed on '$CLUSTER_NAME'."
+	ok "CI role has cluster access"
 fi
 
 # Wait for the database only now — by this point it has almost certainly
@@ -169,8 +215,17 @@ helm repo update >/dev/null
 # neither EKS nor add-ons.
 #
 # What matters is that the metrics API answers, not who installed it.
-if kubectl get deployment metrics-server -n kube-system >/dev/null 2>&1; then
+# ASK EKS, NOT THE ROLLOUT. Checking for the Deployment races the add-on: EKS
+# creates the ServiceAccount first and the Deployment a moment later, so on a
+# freshly created cluster this test can run in between, find nothing, and send
+# Helm into a ServiceAccount that already exists - which fails with "cannot be
+# imported into the current release" and names neither EKS nor add-ons. The
+# add-on's existence is knowable immediately and does not race.
+if aws eks describe-addon --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" \
+		--addon-name metrics-server >/dev/null 2>&1; then
 	ok "metrics-server already present (EKS add-on) — leaving it alone"
+elif kubectl get deployment metrics-server -n kube-system >/dev/null 2>&1; then
+	ok "metrics-server already present — leaving it alone"
 else
 	helm upgrade --install metrics-server metrics-server/metrics-server \
 		--namespace kube-system --wait >/dev/null
@@ -228,6 +283,56 @@ done
 	&& ok "webhook ready" \
 	|| die "the ingress webhook never became usable. Try: kubectl -n kube-system rollout restart deploy/aws-load-balancer-controller, then re-run."
 
+# ---------------------------------------------------------------- logging
+# WHY THIS EXISTS. `kubectl logs` only reaches a pod that is still alive, on a
+# cluster that still exists. This environment is torn down every few hours and
+# its nodes are spot instances, so the logs from the run that actually went
+# wrong are routinely gone before anyone looks. Fluent Bit copies every
+# container's stdout to CloudWatch, where it outlives both.
+#
+# ONE GROUP, NOT ONE PER SERVICE. cloudwatch_logs supports a log_group_template,
+# but its record accessor rejects a literal prefix before an accessor - a
+# template of "/rentez/$kubernetes['namespace_name']" fails to parse with
+# "bad input character '/'" and the pods crash-loop on init. So everything goes
+# to one group and the STREAM name carries the detail:
+#
+#   group   /rentez/cluster
+#   stream  fluentbit-kube.var.log.containers.<pod>_<namespace>_<container>-<id>.log
+#
+# Filter by service name in the console, or:
+#   aws logs tail /rentez/cluster --follow --filter-pattern account-service
+#
+# RETENTION IS SET DELIBERATELY. CloudWatch keeps log events forever by default
+# and bills for the storage indefinitely - including for clusters destroyed
+# months ago, which is the kind of charge nobody goes looking for. Override with
+# LOG_RETENTION_DAYS.
+LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-7}"
+
+# EXPECT QUIET SERVICES TO SHIP NOTHING. Fluent Bit tails from the END of each
+# container log, so anything written before it started is not captured, and
+# Spring Boot logs no line at all for a successful request. A service with no
+# CloudWatch stream is usually idle rather than broken - restart it, or turn a
+# log level up, before concluding the shipping is at fault.
+
+# eks/, not fluent/. The fluent repo publishes the upstream `fluent-bit` chart;
+# `aws-for-fluent-bit` is AWS's build with the CloudWatch output plugin already
+# in it, and it lives in the eks-charts repo added above.
+say "installing Fluent Bit to ship container logs to CloudWatch"
+helm upgrade --install aws-for-fluent-bit eks/aws-for-fluent-bit \
+	--namespace kube-system \
+	--set serviceAccount.create=false \
+	--set serviceAccount.name=aws-for-fluent-bit \
+	--set cloudWatchLogs.enabled=true \
+	--set cloudWatchLogs.region="$AWS_REGION" \
+	--set cloudWatchLogs.logGroupName=/rentez/cluster \
+	--set cloudWatchLogs.autoCreateGroup=true \
+	--set cloudWatchLogs.logRetentionDays="$LOG_RETENTION_DAYS" \
+	--set firehose.enabled=false \
+	--set kinesis.enabled=false \
+	--set elasticsearch.enabled=false \
+	--wait >/dev/null
+ok "fluent-bit — logs at /rentez/cluster, kept $LOG_RETENTION_DAYS days"
+
 helm upgrade --install cluster-autoscaler autoscaler/cluster-autoscaler \
 	--namespace kube-system \
 	--set "autoDiscovery.clusterName=$CLUSTER_NAME" \
@@ -261,6 +366,25 @@ ok "config and secrets applied"
 # RDS has no /docker-entrypoint-initdb.d, so the schemas and roles that Postgres
 # creates automatically in Docker have to be applied by hand exactly once. Same
 # file, both environments.
+# CREATE DATABASE cannot run while connected to its own target, so this one
+# statement goes to the instance's default `rentez` database. Skipped when this
+# environment uses that database, which is the pre-split default.
+if [ "$DB_NAME" != "rentez" ]; then
+	say "creating database $DB_NAME"
+	CREATE_DB=$(mktemp)
+	cat > "$CREATE_DB" <<-CREATEEOF
+	set -e
+	if psql -tAc "SELECT 1 FROM pg_database WHERE datname = '$DB_NAME'" | grep -q 1; then
+	  echo "database $DB_NAME already exists"
+	else
+	  psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$DB_NAME\" OWNER rentez_admin"
+	  echo "created database $DB_NAME"
+	fi
+	CREATEEOF
+	run_db_pod rentez-db-create "$CREATE_DB" rentez || die "could not create database $DB_NAME"
+	rm -f "$CREATE_DB"
+fi
+
 say "creating schemas and roles"
 BOOTSTRAP_SQL=$(mktemp)
 {
@@ -289,7 +413,7 @@ rm -f "$BOOTSTRAP_SQL" "$RUNNER"
 
 # Restore the newest dump if there is one. Otherwise Flyway plus the seed
 # profile build a fresh world when the services start.
-BACKUP_BUCKET="$(stack_output "$PERSISTENT_STACK" BackupBucketName)"
+BACKUP_BUCKET="$(stack_output "$ENVIRONMENT_STACK" BackupBucketName)"
 # `|| true` is load-bearing: `aws s3 ls` exits 1 when a prefix matches nothing,
 # and under `set -euo pipefail` that kills the script mid-assignment with no
 # message at all. It bites every freshly bootstrapped account, which has no
@@ -319,6 +443,63 @@ echo "restored $LATEST"
 SH
 	run_db_pod rentez-db-restore "$RESTORE_SH" || warn "restore failed — the services will build a fresh schema instead"
 	rm -f "$RESTORE_SH"
+
+	# THE RESTORE TAKES THE SCHEMAS BACK OFF THEIR OWNERS, so this has to run
+	# after it and cannot be folded into the bootstrap above.
+	#
+	# 01-schemas.sql creates each schema with AUTHORIZATION <service role>,
+	# making that role the owner - which is what lets Flyway run CREATE TABLE
+	# with no further grants. A pg_dump replay recreates the same schemas as the
+	# master user, so ownership silently reverts to rentez_admin and every
+	# service then dies on startup with "permission denied for schema
+	# rentez_auth". Re-running the bootstrap does not help: its CREATE SCHEMA IF
+	# NOT EXISTS is a no-op once the schema is there, so ownership has to be
+	# asserted with ALTER.
+	say "restoring schema ownership after the dump"
+	OWNERS_SH=$(mktemp)
+	cat > "$OWNERS_SH" <<'OWNEOF'
+set -e
+psql -v ON_ERROR_STOP=1 <<'SQL'
+DO $$
+DECLARE
+  pair RECORD;
+  obj  RECORD;
+BEGIN
+  FOR pair IN
+    SELECT * FROM (VALUES
+      ('rentez_auth','auth_user'), ('rentez_fleet','fleet_user'),
+      ('rentez_booking','booking_user'), ('rentez_payment','payment_user'),
+      ('rentez_notification','notification_user')
+    ) AS t(schema_name, role_name)
+  LOOP
+    EXECUTE format('ALTER SCHEMA %I OWNER TO %I', pair.schema_name, pair.role_name);
+    FOR obj IN
+      SELECT c.relname, c.relkind FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = pair.schema_name AND c.relkind IN ('r','S','v','m','p')
+        -- A sequence owned by a table column follows its table; ALTER SEQUENCE
+        -- ... OWNER on one fails with "is linked to table".
+        AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.objid = c.oid AND d.classid = 'pg_class'::regclass
+            AND d.deptype IN ('a','i')
+        )
+    LOOP
+      EXECUTE format('ALTER %s %I.%I OWNER TO %I',
+        CASE obj.relkind WHEN 'S' THEN 'SEQUENCE'
+                         WHEN 'v' THEN 'VIEW'
+                         WHEN 'm' THEN 'MATERIALIZED VIEW'
+                         ELSE 'TABLE' END,
+        pair.schema_name, obj.relname, pair.role_name);
+    END LOOP;
+  END LOOP;
+END $$;
+SQL
+echo "schema ownership restored"
+OWNEOF
+	run_db_pod rentez-db-owners "$OWNERS_SH" || die "could not restore schema ownership after the dump.
+  Every service will fail on startup with 'permission denied for schema rentez_auth'."
+	rm -f "$OWNERS_SH"
 else
 	ok "no dump to restore — Flyway and the seed profile will build a fresh database"
 fi

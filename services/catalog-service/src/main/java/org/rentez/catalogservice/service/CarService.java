@@ -61,6 +61,23 @@ public class CarService {
 	}
 
 	@Transactional(readOnly = true)
+	public List<CarResponse> searchAll(String location, CarType type) {
+		return carRepository.findByFiltersNotStatus(
+				CarStatus.RETIRED, location, type
+		).stream()
+				.map(CarResponse::from)
+				.toList();
+	}
+
+	@Transactional(readOnly = true)
+	public List<CarResponse> browseFleet() {
+		return carRepository.findByStatusNot(CarStatus.RETIRED)
+				.stream()
+				.map(CarResponse::from)
+				.toList();
+	}
+
+	@Transactional(readOnly = true)
 	public CarResponse getById(Long id) {
 		return CarResponse.from(requireCar(id));
 	}

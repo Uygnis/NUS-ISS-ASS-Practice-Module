@@ -5,10 +5,40 @@ set -euo pipefail
 
 # ------------------------------------------------------------------ constants
 CLUSTER_NAME="${CLUSTER_NAME:-rentez}"
-PERSISTENT_STACK="${PERSISTENT_STACK:-rentez-persistent}"
+
+# The old rentez-persistent stack is now two: one per account, one per
+# environment. See aws/cloudformation/ and issue #41. ACCOUNT_STACK is
+# deliberately not per-environment - it holds the VPC and ECR, which every
+# environment in the account shares.
+# Whether these were chosen by the caller or defaulted here. adopt_legacy_stack
+# below falls back to the pre-split stack only for the ones nobody asked for, so
+# an explicit ACCOUNT_STACK=... is never quietly overridden.
+ACCOUNT_STACK_EXPLICIT="${ACCOUNT_STACK:+1}"
+ENVIRONMENT_STACK_EXPLICIT="${ENVIRONMENT_STACK:+1}"
+ACCOUNT_STACK="${ACCOUNT_STACK:-rentez-account}"
+
+# The pre-split stack, which held everything. It is still what exists in any
+# account bootstrapped before the split, and it publishes all twelve outputs
+# the two new stacks publish between them - so pointing both ACCOUNT_STACK and
+# ENVIRONMENT_STACK at it adopts that environment as it stands, with no
+# migration and no change to the CloudFront URL. See "Adopting an account
+# bootstrapped before the split" in aws/README.md.
+LEGACY_STACK="${LEGACY_STACK:-rentez-persistent}"
+ENVIRONMENT_STACK="${ENVIRONMENT_STACK:-rentez-environment}"
 DATABASE_STACK="${DATABASE_STACK:-rentez-database}"
 GUARDRAILS_STACK="${GUARDRAILS_STACK:-rentez-guardrails}"
 NAMESPACE="${NAMESPACE:-rentez}"
+
+# Which database inside the one RDS instance this environment uses. The services
+# separate themselves by schema inside it (db/init/01-schemas.sql), so a second
+# environment needs a second database rather than a second instance - which is
+# the difference between a few cents and a second hourly bill.
+DB_NAME="${DB_NAME:-rentez}"
+
+# EnvironmentName passed to 15-environment.yaml. Empty means the original
+# unsuffixed resource names, so the pre-split environment is adopted rather
+# than rebuilt.
+ENVIRONMENT_NAME="${ENVIRONMENT_NAME:-}"
 SERVICES=(account-service catalog-service reservation-service payment-service notification-service)
 
 # Pod image used for every one-off database task. Chosen so that no custom image
@@ -25,6 +55,54 @@ warn() { printf "  %s %s\n" "$(_c '0;33' '!!')" "$*"; }
 die()  { printf "\n  %s %s\n\n" "$(_c '0;31' 'ERROR')" "$*" >&2; exit 1; }
 
 step() { printf "\n%s\n" "$(_c '1;37' "== $*")"; }
+
+# ------------------------------------------------- environment stack updates
+# Updating the environment stack means re-deploying its template with a new
+# AlbDnsName. WHICH TEMPLATE depends on what the stack actually is.
+#
+# THIS MATTERS MORE THAN IT LOOKS. An account bootstrapped before the split runs
+# on rentez-persistent, which holds the VPC, the subnets, the security groups
+# and the ECR repositories as well as this environment's buckets and CloudFront.
+# Deploying 15-environment.yaml onto it does not just update the origin - it
+# tells CloudFormation that every resource NOT in that template should be
+# deleted, which is the VPC and ECR among them.
+#
+# That is not hypothetical: it was attempted once and CloudFormation began the
+# deletion, stopping only because rentez-database still imported
+# rentez-db-parameter-group and an export in use cannot be removed. With no
+# environment up, nothing would have held that export and the VPC would have
+# gone.
+#
+# So an adopted legacy stack is updated with the template it was built from.
+deploy_environment_stack() {
+	local alb_dns="$1"
+
+	if [ "$ENVIRONMENT_STACK" = "$LEGACY_STACK" ]; then
+		# 10-persistent.yaml requires the prefix list and has no default for it.
+		local prefix_list
+		prefix_list="$(aws ec2 describe-managed-prefix-lists \
+			--filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing \
+			--query 'PrefixLists[0].PrefixListId' --output text)"
+		[ -n "$prefix_list" ] && [ "$prefix_list" != "None" ] \
+			|| die "could not find the CloudFront prefix list in $AWS_REGION."
+
+		aws cloudformation deploy \
+			--stack-name "$ENVIRONMENT_STACK" \
+			--template-file "$REPO_ROOT/aws/cloudformation/10-persistent.yaml" \
+			--capabilities CAPABILITY_IAM \
+			--parameter-overrides "AlbDnsName=$alb_dns" "ClusterName=$CLUSTER_NAME" \
+				"CloudFrontPrefixListId=$prefix_list" \
+			--no-fail-on-empty-changeset >/dev/null
+	else
+		aws cloudformation deploy \
+			--stack-name "$ENVIRONMENT_STACK" \
+			--template-file "$REPO_ROOT/aws/cloudformation/15-environment.yaml" \
+			--capabilities CAPABILITY_IAM \
+			--parameter-overrides "AlbDnsName=$alb_dns" "ClusterName=$CLUSTER_NAME" \
+				"EnvironmentName=$ENVIRONMENT_NAME" \
+			--no-fail-on-empty-changeset >/dev/null
+	fi
+}
 
 # ------------------------------------------------------------------ preflight
 require_tools() {
@@ -52,6 +130,33 @@ stack_status() {
 
 stack_exists() { [ "$(stack_status "$1")" != "MISSING" ]; }
 
+# ------------------------------------------------- adopting the pre-split stack
+# An account bootstrapped before the split runs on one rentez-persistent stack,
+# which publishes every output the two new stacks publish between them. The
+# defaults above name the new stacks, so on such an account every read-only
+# script reports MISSING and tells the reader to bootstrap an account that is
+# in fact running - which is how `make aws-status` came to say "Not bootstrapped
+# in this account yet" about a live environment with a cluster, a database and
+# five services in it.
+#
+# The documented workaround is to export both names by hand (aws/README.md,
+# "Adopting an account bootstrapped before the split"). That is fine for a
+# deploy, where being explicit about the target is the point, and wrong for a
+# status command, whose entire job is to tell you what is there.
+#
+# Read-only scripts therefore call this first. It only ever substitutes a stack
+# that EXISTS for one that does not, and only when the caller did not name one.
+adopt_legacy_stack() {
+	stack_exists "$LEGACY_STACK" || return 0
+
+	if [ -z "$ACCOUNT_STACK_EXPLICIT" ] && ! stack_exists "$ACCOUNT_STACK"; then
+		ACCOUNT_STACK="$LEGACY_STACK"
+	fi
+	if [ -z "$ENVIRONMENT_STACK_EXPLICIT" ] && ! stack_exists "$ENVIRONMENT_STACK"; then
+		ENVIRONMENT_STACK="$LEGACY_STACK"
+	fi
+}
+
 # Read one Output from a stack. Fails loudly rather than returning an empty
 # string, because an empty registry or subnet id fails much later and much more
 # confusingly than it needs to.
@@ -64,8 +169,8 @@ stack_output() {
 	printf '%s' "$value"
 }
 
-require_persistent_stack() {
-	stack_exists "$PERSISTENT_STACK" \
+require_account_stack() {
+	stack_exists "$ACCOUNT_STACK" \
 		|| die "the persistent stack is missing. Run 'make aws-bootstrap' once per account first."
 }
 
@@ -87,13 +192,16 @@ cluster_exists() {
 # pod spec. That is not fussiness: a dump command contains quotes, dollars and
 # newlines, and embedding it in `kubectl run --overrides` JSON mangles it in
 # ways that surface as a half-written backup rather than an error.
+# run_db_pod <name> <script> [database]
+# The database defaults to this environment's DB_NAME. It is passed explicitly
+# only to CREATE DATABASE, which cannot run while connected to its own target.
 run_db_pod() {
-	local name="$1" script="$2"
+	local name="$1" script="$2" database="${3:-$DB_NAME}"
 	local db_host db_pass bucket
 	db_host="$(stack_output "$DATABASE_STACK" DbEndpoint)"
 	db_pass="$(aws ssm get-parameter --name /rentez/db/master-password \
 		--with-decryption --query Parameter.Value --output text)"
-	bucket="$(stack_output "$PERSISTENT_STACK" BackupBucketName)"
+	bucket="$(stack_output "$ENVIRONMENT_STACK" BackupBucketName)"
 
 	kubectl create configmap "$name-script" --namespace "$NAMESPACE" \
 		--from-file=run.sh="$script" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
@@ -123,7 +231,7 @@ run_db_pod() {
 	        - name: PGUSER
 	          value: "rentez_admin"
 	        - name: PGDATABASE
-	          value: "rentez"
+	          value: "$database"
 	        - name: PGPASSWORD
 	          valueFrom:
 	            secretKeyRef: { name: $name-creds, key: PGPASSWORD }

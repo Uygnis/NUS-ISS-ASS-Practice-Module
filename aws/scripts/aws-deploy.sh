@@ -32,13 +32,13 @@ SUMMARY="${SUMMARY:-1}"
 # date arithmetic.
 require_tools aws kubectl helm npm git
 require_credentials
-require_persistent_stack
+require_account_stack
 
-REGISTRY="$(stack_output "$PERSISTENT_STACK" EcrRegistry)"
-ALB_SG="$(stack_output "$PERSISTENT_STACK" AlbSecurityGroupId)"
-APP_URL="$(stack_output "$PERSISTENT_STACK" AppUrl)"
-FRONTEND_BUCKET="$(stack_output "$PERSISTENT_STACK" FrontendBucketName)"
-DISTRIBUTION_ID="$(stack_output "$PERSISTENT_STACK" DistributionId)"
+REGISTRY="$(stack_output "$ACCOUNT_STACK" EcrRegistry)"
+ALB_SG="$(stack_output "$ACCOUNT_STACK" AlbSecurityGroupId)"
+APP_URL="$(stack_output "$ENVIRONMENT_STACK" AppUrl)"
+FRONTEND_BUCKET="$(stack_output "$ENVIRONMENT_STACK" FrontendBucketName)"
+DISTRIBUTION_ID="$(stack_output "$ENVIRONMENT_STACK" DistributionId)"
 
 # ------------------------------------------------------------------ preflight
 # All four checks exist because this script now runs unattended, against an
@@ -52,8 +52,26 @@ aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION" >/dev/nu
 # 2. Has the namespace been bootstrapped? Without rentez-secrets the pods start
 #    and then crash on a missing DB_PASSWORD, which reads as an application bug
 #    rather than as a half-built environment.
-kubectl get secret rentez-secrets --namespace "$NAMESPACE" >/dev/null 2>&1 \
-	|| die "namespace '$NAMESPACE' is not bootstrapped (no rentez-secrets). Run 'make aws-up'."
+#
+#    READ THE ERROR BEFORE NAMING THE CAUSE. This check used to send stderr to
+#    /dev/null and report every failure as a missing secret. That is wrong for
+#    the most likely one: a CI role with no EKS access entry is refused by the
+#    API server with "Unauthorized", and the secret check cannot tell the
+#    difference between "it is not there" and "I am not allowed to look". The
+#    advice it then gave - run `make aws-up` - does not fix an access entry, and
+#    re-running it against a perfectly good environment finds nothing wrong.
+if ! SECRET_ERR="$(kubectl get secret rentez-secrets --namespace "$NAMESPACE" 2>&1 >/dev/null)"; then
+	case "$SECRET_ERR" in
+		*Unauthorized*|*orbidden*)
+			die "not authorized against cluster '$CLUSTER_NAME'.
+  The credentials are valid - the API server is refusing them. This principal
+  has no EKS access entry, which every new cluster needs afresh:
+    $SECRET_ERR" ;;
+		*)
+			die "namespace '$NAMESPACE' is not bootstrapped (no rentez-secrets). Run 'make aws-up'.
+    $SECRET_ERR" ;;
+	esac
+fi
 
 # 3. Which tag? Default to the current commit, which is what CI tagged.
 if [ -z "$TAG" ]; then
@@ -81,6 +99,7 @@ for svc in "${SERVICES[@]}"; do
 		--set "image.registry=$REGISTRY" \
 		--set "image.tag=$TAG" \
 		--set "ingress.albSecurityGroup=$ALB_SG" \
+		--set "database.name=$DB_NAME" \
 		--wait --timeout 5m >/dev/null
 	ok "$svc"
 done
@@ -111,7 +130,7 @@ ok "ALB $ALB_DNS"
 # recreated by `aws-up`, not by helm — so on a normal merge the origin is
 # already correct. Skipping the no-op saves a few minutes per deploy and, more
 # importantly, avoids invalidating the entire distribution on every commit.
-CURRENT_ALB="$(aws cloudformation describe-stacks --stack-name "$PERSISTENT_STACK" \
+CURRENT_ALB="$(aws cloudformation describe-stacks --stack-name "$ENVIRONMENT_STACK" \
 	--query "Stacks[0].Parameters[?ParameterKey=='AlbDnsName'].ParameterValue" \
 	--output text 2>/dev/null || true)"
 
@@ -123,15 +142,9 @@ if [ "$CURRENT_ALB" = "$ALB_DNS" ]; then
 	ok "invalidated"
 else
 	say "repointing CloudFront at the new ALB (takes a few minutes to propagate)"
-	aws cloudformation deploy \
-		--stack-name "$PERSISTENT_STACK" \
-		--template-file "$REPO_ROOT/aws/cloudformation/10-persistent.yaml" \
-		--capabilities CAPABILITY_IAM \
-		--parameter-overrides "AlbDnsName=$ALB_DNS" "ClusterName=$CLUSTER_NAME" \
-			"CloudFrontPrefixListId=$(aws ec2 describe-managed-prefix-lists \
-				--filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing \
-				--query 'PrefixLists[0].PrefixListId' --output text)" \
-		--no-fail-on-empty-changeset >/dev/null
+	# Which template this uses depends on whether the environment stack is an
+	# adopted pre-split one; see deploy_environment_stack in lib.sh.
+	deploy_environment_stack "$ALB_DNS"
 	aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" --paths '/*' >/dev/null
 	ok "CloudFront updated"
 fi

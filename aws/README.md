@@ -203,14 +203,23 @@ is nothing to leak.
 1. **OIDC provider** — the commands are in the header of
    `.github/workflows/deploy.yml`.
 
-2. **One role**, trusting only this repository through that provider, with the
-   policy in `aws/iam/ci-deploy-policy.json`:
+2. **One role**, with both policies from `aws/iam/`. The trust policy says who
+   may assume it, the permissions policy what it may then do — `create-role`
+   requires the first and has no default:
 
    ```bash
+   # Substitute <ACCOUNT_ID> in ci-trust-policy.json first.
+   aws iam create-role --role-name rentez-ci-deploy \
+     --assume-role-policy-document file://aws/iam/ci-trust-policy.json
+
    aws iam put-role-policy --role-name rentez-ci-deploy \
      --policy-name rentez-deploy \
      --policy-document file://aws/iam/ci-deploy-policy.json
    ```
+
+   The trust policy admits any run from this repository, which is what lets the
+   whole team press the deploy button against one shared account. The flip side
+   is that repository write access is effectively deploy access to that account.
 
    Both jobs assume it. Be aware that it is cluster-admin on EKS — which is why
    the policy is scoped statement by statement rather than reaching for
@@ -224,6 +233,44 @@ is nothing to leak.
    |---|---|
    | `AWS_DEPLOY_ROLE_ARN` | the role from step 2 |
    | `AWS_REGION` | `ap-southeast-1` |
+
+   These are repository-wide because the account is shared: every deploy, from
+   whoever presses the button, assumes the same role.
+
+3b. **One GitHub Environment per deployment target** (Settings → Environments).
+   The Environment decides *where inside the account* a run deploys, so that a
+   merge to `dev` and a merge to `main` stop overwriting each other:
+
+   | Variable | `dev` | `prod` |
+   |---|---|---|
+   | `CLUSTER_NAME` | `rentez-dev` | `rentez-prod` |
+   | `NAMESPACE` | `rentez-dev` | `rentez-prod` |
+   | `ENVIRONMENT_STACK` | `rentez-environment-dev` | `rentez-environment-prod` |
+   | `ENVIRONMENT_NAME` | `dev` | `prod` |
+   | `DB_NAME` | `rentez_dev` | `rentez_prod` |
+
+   `ACCOUNT_STACK` stays unset: one per account, shared by every environment,
+   holding the VPC and the ECR repositories.
+
+   Every one of these defaults in `aws/scripts/lib.sh`, so an Environment that
+   sets none of them deploys to the original single `rentez` environment.
+
+   Each environment gets its own frontend bucket, CloudFront distribution and
+   URL, because `15-environment.yaml` takes an `EnvironmentName` that suffixes
+   every name and export which has to be unique per account. It shares the VPC
+   and the ECR repositories through `10-account.yaml`, and shares the RDS
+   *instance* while using its own *database* — a second instance would be a
+   second hourly bill for isolation the database already provides.
+
+   Bring each cluster up with the same names it is configured with:
+
+   ```bash
+   CLUSTER_NAME=rentez-dev NAMESPACE=rentez-dev \
+     ENVIRONMENT_STACK=rentez-environment-dev ENVIRONMENT_NAME=dev \
+     DB_NAME=rentez_dev \
+     CI_ROLE_ARN=arn:aws:iam::<account>:role/rentez-ci-deploy \
+     make aws-up
+   ```
 
 4. **Give the role access to the cluster.** IAM permission is not cluster
    permission: `eksctl` makes only the creating principal a cluster admin, so
@@ -357,6 +404,92 @@ above); until then use `make aws-images` to build and `make aws-deploy` to
 deploy, both of which run against whichever account you are authenticated to.
 
 ---
+
+## The OIDC subject claim is not what most guides say
+
+This repository has GitHub's **immutable subject claims** enabled, so the `sub`
+in the token is pinned to numeric IDs rather than names:
+
+```
+repo:Uygnis@75312898/NUS-ISS-ASS-Practice-Module@1313919272:environment:prod
+```
+
+not the `repo:OWNER/REPO:...` that every copy-pasted trust policy expects. A
+policy matching the name form never matches, and the only symptom is:
+
+```
+Could not assume role with OIDC: Not authorized to perform sts:AssumeRoleWithWebIdentity
+```
+
+which says nothing about claims and looks exactly like a missing provider or a
+wrong ARN. Ask GitHub for the prefix rather than assembling it by hand:
+
+```bash
+gh api repos/Uygnis/NUS-ISS-ASS-Practice-Module/actions/oidc/customization/sub \
+  --jq '.sub_claim_prefix'
+```
+
+Substitute that into `<SUB_CLAIM_PREFIX>` in `aws/iam/ci-trust-policy.json`. The
+IDs are immutable, which is the point: renaming the repository or the owner does
+not silently hand trust to whoever claims the old name.
+
+## Adopting an account bootstrapped before the split
+
+`10-persistent.yaml` used to hold everything. It is now split into
+`10-account.yaml` (one per account: VPC, security groups, ECR) and
+`15-environment.yaml` (one per environment: buckets, CloudFront, DynamoDB, SQS,
+reaper). An account created before that split has a single `rentez-persistent`
+stack instead.
+
+**No migration is needed, and none should be attempted.** That stack publishes
+all twelve outputs the two new stacks publish between them, under the same
+names. Pointing both variables at it adopts the environment exactly as it
+stands — same buckets, same CloudFront distribution, same URL:
+
+```bash
+export ACCOUNT_STACK=rentez-persistent ENVIRONMENT_STACK=rentez-persistent
+```
+
+Set those two on the GitHub Environment as well, and the deploy workflow uses
+the same environment.
+
+### Adding a second environment beside it
+
+The environment template is self-contained — it references nothing in the
+account stack — so a new environment is one new stack. Keep the legacy stack as
+the account stack, because that is where the VPC and the ECR repositories live:
+
+```bash
+export ACCOUNT_STACK=rentez-persistent
+export ENVIRONMENT_STACK=rentez-environment-dev ENVIRONMENT_NAME=dev
+export CLUSTER_NAME=rentez-dev NAMESPACE=rentez-dev DB_NAME=rentez_dev
+make aws-bootstrap    # creates only the new environment stack
+make aws-up           # second cluster in the shared VPC, own database
+```
+
+`make aws-bootstrap` refuses to run without these when it finds a legacy stack,
+rather than building a second VPC and then failing on bucket names that already
+exist.
+
+### Retiring the legacy stack, eventually
+
+Only worth doing to get the account onto `10-account.yaml` proper; nothing else
+depends on it. The route is CloudFormation resource import: set
+`DeletionPolicy: Retain` on the live stack's resources, remove them from its
+template so they are orphaned rather than deleted, then adopt them into the new
+stacks with `--change-set-type IMPORT`.
+
+Two things to establish before starting, neither of which is settled here:
+
+- **Not every resource type can be imported.** Check each type in this stack
+  against the CloudFormation resource-import support table first; anything
+  unsupported has to be recreated, which for the CloudFront distribution would
+  mean a new URL.
+- **Exports cannot be removed while another stack imports them.** That is not
+  currently a constraint, because the database stack only exists while an
+  environment is up — `aws cloudformation list-imports` reported no importers
+  for any of the twelve. It becomes one the moment someone runs `make aws-up`,
+  so the work has to happen with the environment down.
 
 ## Things that will bite
 

@@ -27,7 +27,7 @@ SKIP_BACKUP="${SKIP_BACKUP:-0}"
 
 require_tools aws eksctl kubectl
 require_credentials
-require_persistent_stack
+require_account_stack
 
 # ------------------------------------------------------------ whose is this?
 # Only meaningful on a shared account, and there it matters a lot: the reaper
@@ -119,7 +119,7 @@ if cluster_exists; then
 		say "waiting for the controller to remove the ALB"
 		for _ in $(seq 1 30); do
 			COUNT="$(aws elbv2 describe-load-balancers \
-				--query "length(LoadBalancers[?VpcId=='$(stack_output "$PERSISTENT_STACK" VpcId)'])" \
+				--query "length(LoadBalancers[?VpcId=='$(stack_output "$ACCOUNT_STACK" VpcId)'])" \
 				--output text 2>/dev/null || echo 0)"
 			[ "$COUNT" = "0" ] && break
 			sleep 10
@@ -161,15 +161,7 @@ step "5/5  Edge and lease"
 # Reset the CloudFront origin. The distribution stays — that is what keeps the
 # team's URL stable — but pointing it at a deleted ALB would leave it serving
 # confusing errors instead of an honest 502.
-aws cloudformation deploy \
-	--stack-name "$PERSISTENT_STACK" \
-	--template-file "$REPO_ROOT/aws/cloudformation/10-persistent.yaml" \
-	--capabilities CAPABILITY_IAM \
-	--parameter-overrides "AlbDnsName=placeholder.example.com" "ClusterName=$CLUSTER_NAME" \
-		"CloudFrontPrefixListId=$(aws ec2 describe-managed-prefix-lists \
-			--filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing \
-			--query 'PrefixLists[0].PrefixListId' --output text)" \
-	--no-fail-on-empty-changeset >/dev/null
+deploy_environment_stack "placeholder.example.com"
 ok "CloudFront origin reset"
 
 disarm_reaper
@@ -185,6 +177,6 @@ cat <<EOF
     ECR images, S3 backups, the CloudFront distribution, SSM parameters, the VPC.
 
   Your URL is unchanged and will work again after the next 'make aws-up'.
-  Backups:  aws s3 ls s3://$(stack_output "$PERSISTENT_STACK" BackupBucketName)/dumps/
+  Backups:  aws s3 ls s3://$(stack_output "$ENVIRONMENT_STACK" BackupBucketName)/dumps/
 
 EOF

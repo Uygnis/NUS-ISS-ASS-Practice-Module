@@ -11,21 +11,32 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require_tools aws
 require_credentials
 
+# Report on the stacks this account actually has, rather than on the ones the
+# defaults name. Without this, an account from before the stack split reads as
+# unbootstrapped while its cluster is up and billing.
+adopt_legacy_stack
+
 printf "\n  account %s · region %s\n\n" "$AWS_ACCOUNT_ID" "$AWS_REGION"
 
 row() { printf "  %-22s %s\n" "$1" "$2"; }
 
 # ------------------------------------------------------------------ stacks
 row "guardrails" "$(stack_status "$GUARDRAILS_STACK")"
-row "persistent" "$(stack_status "$PERSISTENT_STACK")"
-row "database"   "$(stack_status "$DATABASE_STACK")"
+row "account"     "$(stack_status "$ACCOUNT_STACK")"
+row "environment" "$(stack_status "$ENVIRONMENT_STACK")"
+row "database"    "$(stack_status "$DATABASE_STACK")"
+# Name the stack when it is not the one the labels imply, so that a reader of
+# this output is never in doubt about which account layout they are looking at.
+if [ "$ACCOUNT_STACK" = "$LEGACY_STACK" ] || [ "$ENVIRONMENT_STACK" = "$LEGACY_STACK" ]; then
+	row "" "(on $LEGACY_STACK, from before the stack split)"
+fi
 
-if ! stack_exists "$PERSISTENT_STACK"; then
+if ! stack_exists "$ACCOUNT_STACK"; then
 	printf "\n  Not bootstrapped in this account yet. Run: make aws-bootstrap NOTIFY_EMAIL=you@u.nus.edu\n\n"
 	exit 0
 fi
 
-row "url" "$(stack_output "$PERSISTENT_STACK" AppUrl)"
+row "url" "$(stack_output "$ENVIRONMENT_STACK" AppUrl)"
 
 # ------------------------------------------------------------------ cluster
 printf "\n"
@@ -51,7 +62,7 @@ if stack_exists "$DATABASE_STACK"; then
 fi
 
 ALBS="$(aws elbv2 describe-load-balancers \
-	--query "length(LoadBalancers[?VpcId=='$(stack_output "$PERSISTENT_STACK" VpcId)'])" \
+	--query "length(LoadBalancers[?VpcId=='$(stack_output "$ACCOUNT_STACK" VpcId)'])" \
 	--output text 2>/dev/null || echo 0)"
 if [ "$ALBS" != "0" ]; then
 	row "load balancers" "$ALBS"

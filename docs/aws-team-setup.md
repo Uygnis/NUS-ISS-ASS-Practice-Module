@@ -186,14 +186,36 @@ aws iam create-open-id-connect-provider \
 
 ### Step 2: Create the CI role
 
-Create role `rentez-ci-deploy` trusting **only this repository** through that
-provider, then:
+The role needs two policies: a *trust* policy saying who may assume it, and a
+*permissions* policy saying what it may then do. Both are in `aws/iam/`, and
+`create-role` requires the first — it has no default, which is why this step
+previously could not be completed from the repo alone.
+
+Two placeholders have to be filled in first. `<ACCOUNT_ID>` is obvious;
+`<SUB_CLAIM_PREFIX>` is not, and getting it wrong is the single most likely
+reason a deploy fails with `Not authorized to perform
+sts:AssumeRoleWithWebIdentity`. This repository uses immutable subject claims,
+so the token's `sub` carries numeric IDs rather than names — ask GitHub for it:
 
 ```bash
+gh api repos/Uygnis/NUS-ISS-ASS-Practice-Module/actions/oidc/customization/sub \
+  --jq '.sub_claim_prefix'
+# repo:Uygnis@75312898/NUS-ISS-ASS-Practice-Module@1313919272
+```
+
+```bash
+aws iam create-role --role-name rentez-ci-deploy \
+  --assume-role-policy-document file://aws/iam/ci-trust-policy.json
+
 aws iam put-role-policy --role-name rentez-ci-deploy \
   --policy-name rentez-deploy \
   --policy-document file://aws/iam/ci-deploy-policy.json
 ```
+
+The trust policy admits any run from this repository. That is deliberate — the
+account is shared, so anyone on the team can press the deploy button without an
+AWS account of their own. It also means repository write access is effectively
+deploy access to this account.
 
 This role is cluster-admin on EKS, which is why the policy is scoped statement
 by statement rather than using `AdministratorAccess`.
@@ -208,6 +230,33 @@ of these are sensitive, and there are deliberately no long-lived AWS keys):
 | `AWS_DEPLOY_ROLE_ARN` | the role from Step 2 |
 | `AWS_REGION` | `ap-southeast-1` |
 
+Repository-wide, because the account is shared: every deploy assumes the same
+role regardless of who triggered it.
+
+### Step 3b: One GitHub Environment per deployment target
+
+Settings → **Environments**. The Environment does not choose an account — there
+is only one — it chooses *where inside it* a run deploys, so that a merge to
+`dev` and a merge to `main` stop landing on top of each other. `dev.yml` and
+`prod.yml` pass `dev` and `prod` automatically; typing a name into Run workflow
+picks one by hand.
+
+| Variable | `dev` | `prod` |
+|---|---|---|
+| `CLUSTER_NAME` | `rentez-dev` | `rentez-prod` |
+| `NAMESPACE` | `rentez-dev` | `rentez-prod` |
+| `ENVIRONMENT_STACK` | `rentez-environment-dev` | `rentez-environment-prod` |
+| `ENVIRONMENT_NAME` | `dev` | `prod` |
+| `DB_NAME` | `rentez_dev` | `rentez_prod` |
+
+`ACCOUNT_STACK` stays unset — one per account, shared by every environment.
+
+Each of these defaults in `aws/scripts/lib.sh`, so an Environment that sets none
+of them deploys to the original single `rentez` environment and nothing changes.
+
+See "Two environments in one account" below for what each environment gets of
+its own, and what it shares.
+
 ### Step 4: Grant the role cluster access
 
 **IAM permission is not cluster permission.** `eksctl` grants admin only to the
@@ -216,22 +265,47 @@ as well. `make aws-up` creates one when told the role ARN:
 
 ```bash
 export CI_ROLE_ARN=arn:aws:iam::<shared-account-id>:role/rentez-ci-deploy
-make aws-up
+CLUSTER_NAME=rentez-dev NAMESPACE=rentez-dev \
+  ENVIRONMENT_STACK=rentez-environment-dev ENVIRONMENT_NAME=dev \
+  DB_NAME=rentez_dev \
+  make aws-up
 ```
 
-This must be set **every time the cluster is created**, because the cluster is
-ephemeral. Put the export in the shared account's shell profile and forget it.
+Once per cluster — two environments means running this twice, each with its own
+names.
 
-Skip this and every deploy fails with:
+### Two environments in one account
 
-```
-error: You must be logged in to the server (Unauthorized)
-```
+Each environment gets its own frontend bucket, CloudFront distribution, URL,
+DynamoDB tables and SQS queues, from its own `15-environment.yaml` stack. What
+it shares, through the single `10-account.yaml` stack, is the VPC and subnets,
+the security groups and the five ECR repositories — none of which benefit from
+duplication, and the shared VPC is what lets a second cluster cost no second
+NAT gateway.
 
-which mentions neither IAM nor the missing access entry, and sends people
-looking at the OIDC trust policy for an afternoon.
+The database is shared at the *instance* level and separate at the *database*
+level: `DB_NAME` gives each environment its own database inside the one RDS
+instance, with the five per-service schemas created in each by `make aws-up`. A
+second instance would be a second hourly bill for isolation the database
+already provides.
 
----
+`10-persistent.yaml` stays in the tree because the account bootstrapped before
+the split still runs on it. It needs no migration: that one stack publishes all
+twelve outputs the two new ones publish between them, so setting
+`ACCOUNT_STACK=rentez-persistent ENVIRONMENT_STACK=rentez-persistent` adopts the
+existing environment unchanged, URL included. `make aws-bootstrap` refuses to
+run without that when it finds a legacy stack, rather than building a second VPC
+and then failing on bucket names that already exist. See "Adopting an account
+bootstrapped before the split" in `aws/README.md`.
+
+**Subnet tags, since this is easy to get wrong later.** The shared subnets carry
+`kubernetes.io/role/elb` and deliberately *no* `kubernetes.io/cluster/<name>`
+tag. The AWS Load Balancer Controller's rule is that if any cluster tag exists
+on a subnet but none names the cluster doing the lookup, the subnet is filtered
+out — so tagging these for one cluster would hide them from every other cluster
+in the account, and the ingress would fail with "unable to discover subnets".
+With no such tag the rule never fires and the role tag alone serves any number
+of clusters. Do not add one back per cluster.
 
 ## Troubleshooting
 

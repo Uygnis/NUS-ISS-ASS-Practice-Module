@@ -128,10 +128,17 @@ The ephemeral layer holds a **lease**: `make aws-up` writes a deadline to SSM at
 everything down when it passes. This is what stops a forgotten cluster becoming
 a $155 month.
 
-## Known issue
+## SPA routing at the edge
 
-CloudFront maps **403 and 404 to `/index.html` with status 200** for React
-deep-linking, and that applies to `/api/*` too. A missing record therefore
-returns `200` with an HTML body, so a `fetch()` checking `res.ok` sees success
-and then fails parsing HTML as JSON. Fixing it needs a CloudFront Function or an
-`/api/*`-scoped behaviour that skips the error rewrite.
+React deep-linking needs `/bookings/42` to serve `index.html`, because that path
+is not an S3 object and S3 answers `403` for it through OAC. A **CloudFront
+Function on the default cache behaviour** rewrites extensionless paths to
+`/index.html` before the request reaches S3.
+
+This was previously done with `CustomErrorResponses` mapping 403 and 404 to
+`200 /index.html`, which was listed here as a known issue: that setting is
+distribution-level, so it applied to `/api/*` as well and every API 403 and 404
+reached the browser as `200 text/html`. A `fetch()` checking `res.ok` saw
+success and then failed parsing HTML as JSON. Because `/api/*` has its own cache
+behaviour and no function association, the function cannot repeat that mistake —
+API responses keep their real status codes.

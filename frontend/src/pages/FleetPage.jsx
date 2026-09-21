@@ -51,7 +51,8 @@ function CarsPanel() {
   async function load() {
     setErr("");
     try {
-      const list = await api.catalog.search(location, type);
+      const list = await api.catalog.searchAll(location, type);
+      console.log(list);
       setCars(list);
     } catch (e) {
       setErr(e.message);

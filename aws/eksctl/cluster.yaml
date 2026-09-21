@@ -24,7 +24,9 @@ apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
 
 metadata:
-  name: rentez
+  # Substituted, not fixed: a second environment means a second cluster in the
+  # same account, and two clusters cannot share a name.
+  name: "${CLUSTER_NAME}"
   region: "${AWS_REGION}"
   # 1.31+ so the in-tree cloud provider removals and the current AWS Load
   # Balancer Controller are both settled. Pin it: an unpinned version means two
@@ -89,6 +91,29 @@ iam:
     # Lets the five services read /rentez/* from SSM Parameter Store. Scoped to
     # that prefix and to decrypting with the account default key - a pod that is
     # compromised can read this project's config and nothing else in the account.
+    # Ships every container's stdout to CloudWatch Logs (Fluent Bit, installed
+    # by make aws-up). Scoped to this project's log group: a compromised log
+    # shipper can write logs and read nothing.
+    #
+    # logs:PutRetentionPolicy is here so aws-up can cap retention. Without a cap
+    # CloudWatch keeps log events forever and quietly bills for the storage long
+    # after the cluster it came from was destroyed.
+    - metadata:
+        name: aws-for-fluent-bit
+        namespace: kube-system
+      attachPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogStreams
+              - logs:DescribeLogGroups
+              - logs:PutRetentionPolicy
+            Resource: "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/rentez/*"
+
     - metadata:
         name: rentez-app
         namespace: rentez

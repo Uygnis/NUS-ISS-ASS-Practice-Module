@@ -1,46 +1,36 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
-# RentEZ — the PERSISTENT layer. Created once per account and then left alone.
-#
-# Deploy it with `make aws-bootstrap`, which generates the two secrets, looks up
-# the CloudFront prefix list, and then runs:
-#
-#   aws cloudformation deploy \
-#     --stack-name rentez-persistent \
-#     --template-file aws/cloudformation/10-persistent.yaml \
-#     --capabilities CAPABILITY_IAM \
-#     --parameter-overrides CloudFrontPrefixListId=pl-xxxxxxxx
-#
-# EVERYTHING IN HERE IS FREE OR PENNIES WHEN NOTHING IS RUNNING.
-# A VPC, subnets, an internet gateway, security groups, an SSM parameter and an
-# idle CloudFront distribution all cost nothing at rest. ECR is $0.10/GB/month
-# and S3 $0.025/GB. That is the whole point of the split: `make aws-down` can
-# destroy the expensive layer completely without losing the team's URL, their
-# container images, their database backups, or their secrets.
-#
-# TWO COST DECISIONS ARE ENCODED HERE AND BOTH DESERVE A LINE IN THE REPORT.
-#
-#   1. THERE IS NO NAT GATEWAY. A NAT Gateway is ~$0.059/hr in ap-southeast-1,
-#      about $43 a month, whether or not a single byte flows through it - which
-#      is more than the EKS control plane and more than everything else in this
-#      project combined. Worker nodes therefore live in PUBLIC subnets with
-#      public IPs, and the security groups below are what actually protects
-#      them. For a coursework environment that is the right trade. For a
-#      production system it is not, and saying so explicitly is worth marks.
-#
-#   2. SECRETS LIVE IN SSM PARAMETER STORE, NOT SECRETS MANAGER. Standard-tier
-#      parameters are free; Secrets Manager is $0.40 per secret per month, which
-#      would be ~$2.40/month for six secrets that are read a handful of times a
-#      day. The architecture doc says Secrets Manager - this is a deliberate
-#      deviation, not an oversight.
-
 Description: >
-  RentEZ persistent layer: VPC without a NAT gateway, security groups, ECR
-  repositories, S3 buckets, a stable CloudFront distribution, SSM parameters,
-  DynamoDB tables, SQS queues, and the TTL reaper that deletes a forgotten
-  cluster. Free or near-free at rest.
+  One RentEZ environment: its frontend bucket and CloudFront distribution, its
+  DynamoDB tables and SQS queues, its backup bucket, and the reaper that tears
+  its cluster down when the lease expires.
+
+  ONE OF THESE PER ENVIRONMENT. Deploy it alongside 10-account.yaml, which holds
+  the VPC and ECR that every environment in the account shares.
+
+  The DynamoDB tables and SQS queues live here rather than in the account stack
+  because they carry data. Sharing rentez-availability or rentez-booking-events
+  between dev and prod would let a dev deploy mutate prod state.
+
+  NAMING, AND WHY IT IS CONDITIONAL.
+  With EnvironmentName empty, every resource and export keeps exactly the name
+  10-persistent.yaml gave it, so the existing environment is adopted rather than
+  rebuilt. Any other value inserts that name: rentez-frontend-dev-<account>,
+  rentez-sessions-dev, export rentez-app-url-dev. Bucket names and export names
+  are unique per account, which is the whole reason a second copy of the old
+  template could not be created at all.
 
 Parameters:
+  EnvironmentName:
+    Type: String
+    Default: ""
+    AllowedPattern: "^[a-z0-9-]*$"
+    Description: >
+      Suffix distinguishing this environment's resources, e.g. dev or prod.
+      Empty means the original unsuffixed names - keep it empty for the
+      environment that already exists, so its bucket and distribution are not
+      replaced.
+
   AlbDnsName:
     Type: String
     Default: placeholder.example.com
@@ -55,268 +45,19 @@ Parameters:
     Default: rentez
     Description: EKS cluster name. Must match aws/eksctl/cluster.yaml.
 
-  CloudFrontPrefixListId:
-    Type: String
-    AllowedPattern: "^pl-[0-9a-f]+$"
-    Description: >
-      The AWS-managed prefix list "com.amazonaws.global.cloudfront.origin-facing",
-      which is what locks the ALB down so only CloudFront can reach it. Its ID
-      differs per region and CloudFormation has no pseudo-parameter for it, so
-      scripts/aws-bootstrap.sh looks it up and passes it in:
-
-        aws ec2 describe-managed-prefix-lists \
-          --filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing \
-          --query 'PrefixLists[0].PrefixListId' --output text
-
-      Using the managed list rather than a hand-maintained CIDR block matters:
-      AWS keeps it current as CloudFront's edge ranges change, and a stale
-      allow-list would fail closed in a way that looks like an application bug.
-
-# The distribution must exist permanently so the team's URL is stable, but it
-# has nothing to point at while the cluster is down. The placeholder origin does
-# not resolve, so /api/* returns 502 between teardown and the next `make aws-up`
-# - which is the honest answer, and better than the URL changing.
-
-Mappings:
-  Cidr:
-    Vpc:      { Block: "10.42.0.0/16" }
-    PublicA:  { Block: "10.42.0.0/20" }
-    PublicB:  { Block: "10.42.16.0/20" }
-    PrivateA: { Block: "10.42.128.0/20" }
-    PrivateB: { Block: "10.42.144.0/20" }
+Conditions:
+  # Empty EnvironmentName means "the environment that predates this split", and
+  # every name below falls back to what 10-persistent.yaml used.
+  IsDefaultEnvironment: !Equals [!Ref EnvironmentName, ""]
 
 Resources:
-
-  # ==========================================================  NETWORK  =======
-  Vpc:
-    Type: AWS::EC2::VPC
-    Properties:
-      CidrBlock: !FindInMap [Cidr, Vpc, Block]
-      EnableDnsSupport: true
-      # REQUIRED by EKS. Without DNS hostnames the kubelet cannot resolve the
-      # cluster endpoint and nodes never join, with an error that points
-      # nowhere useful.
-      EnableDnsHostnames: true
-      Tags:
-        - { Key: Name, Value: !Sub "${ClusterName}-vpc" }
-        - { Key: Project, Value: rentez }
-        - { Key: Layer, Value: persistent }
-
-  InternetGateway:
-    Type: AWS::EC2::InternetGateway
-    Properties:
-      Tags:
-        - { Key: Name, Value: !Sub "${ClusterName}-igw" }
-        - { Key: Project, Value: rentez }
-
-  AttachGateway:
-    Type: AWS::EC2::VPCGatewayAttachment
-    Properties:
-      VpcId: !Ref Vpc
-      InternetGatewayId: !Ref InternetGateway
-
-  # Two AZs because an ALB requires subnets in at least two, and because RDS
-  # needs a subnet group spanning two even for a single-AZ instance.
-  PublicSubnetA:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref Vpc
-      CidrBlock: !FindInMap [Cidr, PublicA, Block]
-      AvailabilityZone: !Select [0, !GetAZs ""]
-      # Nodes need public IPs precisely because there is no NAT gateway: this is
-      # how a pod reaches ECR to pull its image and the EKS API to register.
-      MapPublicIpOnLaunch: true
-      Tags:
-        - { Key: Name, Value: !Sub "${ClusterName}-public-a" }
-        - { Key: Project, Value: rentez }
-        # The AWS Load Balancer Controller discovers subnets by these tags. Get
-        # them wrong and ingress creation fails with "unable to discover
-        # subnets", which reads like a permissions problem and is not.
-        - { Key: kubernetes.io/role/elb, Value: "1" }
-        - { Key: !Sub "kubernetes.io/cluster/${ClusterName}", Value: shared }
-
-  PublicSubnetB:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref Vpc
-      CidrBlock: !FindInMap [Cidr, PublicB, Block]
-      AvailabilityZone: !Select [1, !GetAZs ""]
-      MapPublicIpOnLaunch: true
-      Tags:
-        - { Key: Name, Value: !Sub "${ClusterName}-public-b" }
-        - { Key: Project, Value: rentez }
-        - { Key: kubernetes.io/role/elb, Value: "1" }
-        - { Key: !Sub "kubernetes.io/cluster/${ClusterName}", Value: shared }
-
-  # RDS only. Nothing here needs outbound internet, which is what makes losing
-  # the NAT gateway painless.
-  PrivateSubnetA:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref Vpc
-      CidrBlock: !FindInMap [Cidr, PrivateA, Block]
-      AvailabilityZone: !Select [0, !GetAZs ""]
-      Tags:
-        - { Key: Name, Value: !Sub "${ClusterName}-private-a" }
-        - { Key: Project, Value: rentez }
-
-  PrivateSubnetB:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref Vpc
-      CidrBlock: !FindInMap [Cidr, PrivateB, Block]
-      AvailabilityZone: !Select [1, !GetAZs ""]
-      Tags:
-        - { Key: Name, Value: !Sub "${ClusterName}-private-b" }
-        - { Key: Project, Value: rentez }
-
-  PublicRouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref Vpc
-      Tags:
-        - { Key: Name, Value: !Sub "${ClusterName}-public-rt" }
-
-  DefaultPublicRoute:
-    Type: AWS::EC2::Route
-    DependsOn: AttachGateway
-    Properties:
-      RouteTableId: !Ref PublicRouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref InternetGateway
-
-  PublicSubnetARouteAssoc:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: { SubnetId: !Ref PublicSubnetA, RouteTableId: !Ref PublicRouteTable }
-
-  PublicSubnetBRouteAssoc:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: { SubnetId: !Ref PublicSubnetB, RouteTableId: !Ref PublicRouteTable }
-
-  # Deliberately no route to 0.0.0.0/0 - this is what makes them private, and
-  # with no NAT gateway there is nowhere for such a route to point anyway.
-  PrivateRouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref Vpc
-      Tags:
-        - { Key: Name, Value: !Sub "${ClusterName}-private-rt" }
-
-  PrivateSubnetARouteAssoc:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: { SubnetId: !Ref PrivateSubnetA, RouteTableId: !Ref PrivateRouteTable }
-
-  PrivateSubnetBRouteAssoc:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: { SubnetId: !Ref PrivateSubnetB, RouteTableId: !Ref PrivateRouteTable }
-
-  # ===================================================  SECURITY GROUPS  ======
-
-  # The ALB is internet-facing, but only CloudFront may reach it. AWS publishes a
-  # managed prefix list of CloudFront's origin-facing ranges and keeps it
-  # current, so this is one rule rather than a cron job maintaining IP ranges.
-  #
-  # This matters more than it looks. Without it, anyone who discovers the ALB's
-  # DNS name talks to the services over plain HTTP, bypassing CloudFront
-  # entirely - and the whole "everything is HTTPS" story in the report is false.
-  AlbSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: ALB - accepts traffic from CloudFront only
-      VpcId: !Ref Vpc
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          SourcePrefixListId: !Ref CloudFrontPrefixListId
-          Description: CloudFront origin-facing ranges (AWS-managed prefix list)
-      Tags:
-        - { Key: Name, Value: !Sub "${ClusterName}-alb-sg" }
-        - { Key: Project, Value: rentez }
-
-  RdsSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: RDS PostgreSQL - reachable only from cluster nodes
-      VpcId: !Ref Vpc
-      Tags:
-        - { Key: Name, Value: !Sub "${ClusterName}-rds-sg" }
-        - { Key: Project, Value: rentez }
-
-  # eksctl creates its own node security group, so the rule allowing nodes to
-  # reach Postgres is added by `make aws-up` once that group exists. Declared
-  # here as a self-referencing rule so the group is complete and self-documenting.
-  RdsIngressFromSelf:
-    Type: AWS::EC2::SecurityGroupIngress
-    Properties:
-      GroupId: !Ref RdsSecurityGroup
-      IpProtocol: tcp
-      FromPort: 5432
-      ToPort: 5432
-      SourceSecurityGroupId: !Ref RdsSecurityGroup
-      Description: Bootstrap and dump/restore jobs running inside the VPC
-
-  # ==============================================  DATABASE PLUMBING  =========
-  # Free, and kept out of the ephemeral stack so `aws-up` creates exactly one
-  # billable database resource.
-
-  DbSubnetGroup:
-    Type: AWS::RDS::DBSubnetGroup
-    Properties:
-      DBSubnetGroupDescription: RentEZ private subnets
-      SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
-      Tags:
-        - { Key: Project, Value: rentez }
-
-  # max_connections on db.t4g.micro defaults to LEAST(DBInstanceClassMemory/9531392, 5000),
-  # which is roughly 112 - three of them reserved for superusers. Twenty-five
-  # pods at full scale-out with a Hikari pool of 5 want 125 and would exhaust it
-  # at exactly the moment the HPA starts working. The application ships a pool of
-  # 3 (75 connections) so the default is already survivable; this parameter group
-  # exists so the number is explicit and tunable during the load test rather than
-  # being an AWS default nobody chose.
-  DbParameterGroup:
-    Type: AWS::RDS::DBParameterGroup
-    Properties:
-      Description: RentEZ PostgreSQL 16 - explicit connection ceiling
-      Family: postgres16
-      Parameters:
-        # DELIBERATELY LEFT AT THE ENGINE DEFAULT, which is
-        # LEAST({DBInstanceClassMemory/9531392}, 5000) - about 112 on a
-        # db.t4g.micro, three of them reserved for superusers.
-        #
-        # Raising it is the obvious move and the wrong one. Postgres allocates
-        # roughly 10 MB of backend memory per connection, so 150 connections on
-        # a 1 GB instance invites the OOM killer partway through the load test -
-        # a far more confusing failure than the connection ceiling it was meant
-        # to avoid. The fix belongs on the other side: Hikari is capped at 3, so
-        # 25 pods at full scale-out want 75 connections and fit comfortably.
-        #
-        # If the ceiling ever does need raising, RDS Proxy is the real answer.
-        max_connections: "LEAST({DBInstanceClassMemory/9531392},5000)"
-        # Log anything slower than a second. The load test is the point of this
-        # project and this is the cheapest evidence you will get.
-        log_min_duration_statement: "1000"
-      Tags:
-        - { Key: Project, Value: rentez }
-
-  # ====================================================  CONTAINER IMAGES  ====
-  # One repository per service. The lifecycle policy is not optional housekeeping:
-  # without it every merge to main adds a ~250 MB image forever, and ECR storage
-  # is one of the few things that keeps costing money after `make aws-nuke`.
-
-  EcrAccount:       { Type: AWS::ECR::Repository, Properties: { RepositoryName: rentez-account-service,      ImageScanningConfiguration: { ScanOnPush: true }, LifecyclePolicy: { LifecyclePolicyText: '{"rules":[{"rulePriority":1,"description":"keep last 5","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":5},"action":{"type":"expire"}}]}' }, Tags: [{ Key: Project, Value: rentez }] } }
-  EcrCatalog:       { Type: AWS::ECR::Repository, Properties: { RepositoryName: rentez-catalog-service,      ImageScanningConfiguration: { ScanOnPush: true }, LifecyclePolicy: { LifecyclePolicyText: '{"rules":[{"rulePriority":1,"description":"keep last 5","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":5},"action":{"type":"expire"}}]}' }, Tags: [{ Key: Project, Value: rentez }] } }
-  EcrReservation:   { Type: AWS::ECR::Repository, Properties: { RepositoryName: rentez-reservation-service,  ImageScanningConfiguration: { ScanOnPush: true }, LifecyclePolicy: { LifecyclePolicyText: '{"rules":[{"rulePriority":1,"description":"keep last 5","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":5},"action":{"type":"expire"}}]}' }, Tags: [{ Key: Project, Value: rentez }] } }
-  EcrPayment:       { Type: AWS::ECR::Repository, Properties: { RepositoryName: rentez-payment-service,      ImageScanningConfiguration: { ScanOnPush: true }, LifecyclePolicy: { LifecyclePolicyText: '{"rules":[{"rulePriority":1,"description":"keep last 5","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":5},"action":{"type":"expire"}}]}' }, Tags: [{ Key: Project, Value: rentez }] } }
-  EcrNotification:  { Type: AWS::ECR::Repository, Properties: { RepositoryName: rentez-notification-service, ImageScanningConfiguration: { ScanOnPush: true }, LifecyclePolicy: { LifecyclePolicyText: '{"rules":[{"rulePriority":1,"description":"keep last 5","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":5},"action":{"type":"expire"}}]}' }, Tags: [{ Key: Project, Value: rentez }] } }
 
   # ==============================================================  S3  ========
 
   FrontendBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub "rentez-frontend-${AWS::AccountId}"
+      BucketName: !If [IsDefaultEnvironment, !Sub "rentez-frontend-${AWS::AccountId}", !Sub "rentez-frontend-${EnvironmentName}-${AWS::AccountId}"]
       # Private. CloudFront reaches it through Origin Access Control, so there is
       # no public bucket policy anywhere in this project.
       PublicAccessBlockConfiguration:
@@ -337,7 +78,7 @@ Resources:
   BackupBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub "rentez-backups-${AWS::AccountId}"
+      BucketName: !If [IsDefaultEnvironment, !Sub "rentez-backups-${AWS::AccountId}", !Sub "rentez-backups-${EnvironmentName}-${AWS::AccountId}"]
       VersioningConfiguration: { Status: Enabled }
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
@@ -529,7 +270,7 @@ Resources:
   ExpiresAtParam:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /rentez/env/expires-at
+      Name: !If [IsDefaultEnvironment, "/rentez/env/expires-at", !Sub "/rentez/env/${EnvironmentName}/expires-at"]
       Type: String
       Value: none
       Description: >
@@ -550,7 +291,7 @@ Resources:
   SessionsTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: rentez-sessions
+      TableName: !If [IsDefaultEnvironment, "rentez-sessions", !Sub "rentez-sessions-${EnvironmentName}"]
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions: [{ AttributeName: jti, AttributeType: S }]
       KeySchema: [{ AttributeName: jti, KeyType: HASH }]
@@ -560,7 +301,7 @@ Resources:
   AvailabilityTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: rentez-availability
+      TableName: !If [IsDefaultEnvironment, "rentez-availability", !Sub "rentez-availability-${EnvironmentName}"]
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - { AttributeName: car_id, AttributeType: S }
@@ -573,7 +314,7 @@ Resources:
   AuditTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: rentez-audit
+      TableName: !If [IsDefaultEnvironment, "rentez-audit", !Sub "rentez-audit-${EnvironmentName}"]
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - { AttributeName: pk, AttributeType: S }
@@ -586,14 +327,14 @@ Resources:
   BookingEventsDlq:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: rentez-booking-events-dlq
+      QueueName: !If [IsDefaultEnvironment, "rentez-booking-events-dlq", !Sub "rentez-booking-events-dlq-${EnvironmentName}"]
       MessageRetentionPeriod: 1209600
       Tags: [{ Key: Project, Value: rentez }]
 
   BookingEventsQueue:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: rentez-booking-events
+      QueueName: !If [IsDefaultEnvironment, "rentez-booking-events", !Sub "rentez-booking-events-${EnvironmentName}"]
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt BookingEventsDlq.Arn
         maxReceiveCount: 3
@@ -803,40 +544,16 @@ Resources:
       SourceArn: !GetAtt ReaperSchedule.Arn
 
 Outputs:
-  VpcId:
-    Value: !Ref Vpc
-    Export: { Name: rentez-vpc-id }
-  PublicSubnetIds:
-    Value: !Sub "${PublicSubnetA},${PublicSubnetB}"
-    Export: { Name: rentez-public-subnets }
-  PrivateSubnetIds:
-    Value: !Sub "${PrivateSubnetA},${PrivateSubnetB}"
-    Export: { Name: rentez-private-subnets }
-  AlbSecurityGroupId:
-    Value: !Ref AlbSecurityGroup
-    Export: { Name: rentez-alb-sg }
-  RdsSecurityGroupId:
-    Value: !Ref RdsSecurityGroup
-    Export: { Name: rentez-rds-sg }
-  DbSubnetGroupName:
-    Value: !Ref DbSubnetGroup
-    Export: { Name: rentez-db-subnet-group }
-  DbParameterGroupName:
-    Value: !Ref DbParameterGroup
-    Export: { Name: rentez-db-parameter-group }
-  EcrRegistry:
-    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com"
-    Export: { Name: rentez-ecr-registry }
   FrontendBucketName:
     Value: !Ref FrontendBucket
-    Export: { Name: rentez-frontend-bucket }
+    Export: { Name: !If [IsDefaultEnvironment, "rentez-frontend-bucket", !Sub "rentez-frontend-bucket-${EnvironmentName}"] }
   BackupBucketName:
     Value: !Ref BackupBucket
-    Export: { Name: rentez-backup-bucket }
+    Export: { Name: !If [IsDefaultEnvironment, "rentez-backup-bucket", !Sub "rentez-backup-bucket-${EnvironmentName}"] }
   DistributionId:
     Value: !Ref Distribution
-    Export: { Name: rentez-distribution-id }
+    Export: { Name: !If [IsDefaultEnvironment, "rentez-distribution-id", !Sub "rentez-distribution-id-${EnvironmentName}"] }
   AppUrl:
     Description: The team's permanent URL. Bookmark this; it survives every teardown.
     Value: !Sub "https://${Distribution.DomainName}"
-    Export: { Name: rentez-app-url }
+    Export: { Name: !If [IsDefaultEnvironment, "rentez-app-url", !Sub "rentez-app-url-${EnvironmentName}"] }

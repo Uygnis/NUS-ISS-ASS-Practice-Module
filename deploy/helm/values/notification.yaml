@@ -10,11 +10,22 @@ database:
   user: notification_user
   passwordParameter: notification-db-password
 
-# NO INGRESS, AND NO AUTOSCALING. Both are deliberate.
+# NO AUTOSCALING, BUT IT DOES NEED AN INGRESS.
 #
-# No ingress: notification-service is reached only by the outbox relays inside
-# the cluster, over Kubernetes DNS. It has no public API, so putting it on the
-# ALB would widen the attack surface for nothing.
+# This file used to say notification-service "has no public API" and disabled
+# the ingress on that basis. That was wrong: NotificationController exposes
+# /api/notifications/me and /api/notifications/me/unread-count, and the
+# frontend's notifications page calls both.
+#
+# The effect was invisible rather than loud. With no ingress the ALB has no rule
+# for /api/notifications, so CloudFront fell through to the SPA and returned
+# index.html with a 200 - which looks like a working endpoint to anything that
+# checks only the status code, and parses as garbage to anything expecting JSON.
+#
+# The internal paths stay closed: deploy/k8s/00-internal-deny.yaml already
+# denies /api/notifications/internal/*, at a lower rule order than this one,
+# which is what keeps the relay-only endpoints off the public ALB. That deny
+# rule existing at all is a hint the ingress was meant to be here.
 #
 # No autoscaling: it is a queue consumer, and CPU is the wrong signal for one. A
 # consumer falling behind is blocked, not busy, so utilisation stays low however
@@ -26,7 +37,11 @@ database:
 # out of scope here.
 
 ingress:
-  enabled: false
+  enabled: true
+  path: /api/notifications
+  # Next after the other four (100-103). The internal-deny rule sits at
+  # group.order 10, so it is still evaluated well before any of these.
+  order: 104
 
 autoscaling:
   enabled: false

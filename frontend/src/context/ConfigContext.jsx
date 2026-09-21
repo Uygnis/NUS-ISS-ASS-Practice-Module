@@ -5,7 +5,9 @@ const STORAGE_KEY = "rentez_config_overrides";
 
 function loadConfig() {
   const base = {
-    GATEWAY: window.__RENTEZ_GATEWAY_ENDPOINT__ || "http://localhost:8080",
+    // ?? not ||: an empty gateway means same-origin and is a deliberate
+    // value, but || treats it as unset and would fall back to localhost.
+    GATEWAY: window.__RENTEZ_GATEWAY_ENDPOINT__ ?? "",
   };
   let overrides = {};
   try {
@@ -21,7 +23,9 @@ export function ConfigProvider({ children }) {
     setConfig((prev) => {
       const next = { ...prev, ...patch };
       const base = {
-        GATEWAY: window.__RENTEZ_GATEWAY_ENDPOINT__ || "http://localhost:8080",
+        // ?? not ||: an empty gateway means same-origin and is a deliberate
+    // value, but || treats it as unset and would fall back to localhost.
+    GATEWAY: window.__RENTEZ_GATEWAY_ENDPOINT__ ?? "",
       };
       const overrides = {};
       Object.keys(next).forEach((key) => {
