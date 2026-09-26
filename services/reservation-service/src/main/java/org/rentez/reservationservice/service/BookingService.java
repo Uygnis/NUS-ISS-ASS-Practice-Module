@@ -17,6 +17,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -38,19 +39,32 @@ public class BookingService {
 	private final CatalogClient catalogClient;
 	private final AuditService auditService;
 	private final OutboxWriter outbox;
+	private final TransactionTemplate transaction;
 
 	public BookingService(BookingRepository bookingRepository, BookingDayRepository bookingDayRepository,
-			CatalogClient catalogClient, AuditService auditService, OutboxWriter outbox) {
+			CatalogClient catalogClient, AuditService auditService, OutboxWriter outbox,
+			TransactionTemplate transaction) {
 		this.bookingRepository = bookingRepository;
 		this.bookingDayRepository = bookingDayRepository;
 		this.catalogClient = catalogClient;
 		this.auditService = auditService;
 		this.outbox = outbox;
+		this.transaction = transaction;
 	}
 
 	// ------------------------------------------------------------------ create
 
-	@Transactional
+	/**
+	 * Not {@code @Transactional}, deliberately. The catalog call happens first,
+	 * with no transaction open, and only the writes run inside one.
+	 *
+	 * <p>With the annotation on the method, Spring took a database connection on
+	 * entry and held it through the HTTP round trip to catalog. With a pool of 3
+	 * (see application.properties) that capped the service at three bookings in
+	 * flight: under load, requests queued for a connection, hit Hikari's 30s
+	 * timeout and failed while CPU sat below 1% - so the HPA never fired either.
+	 * Found by perf/load.js; see docs/quality-attributes.md.
+	 */
 	public BookingResponse create(Long customerId, String customerEmail, BookingRequest request) {
 		requireOrderedDates(request.startDate(), request.endDate());
 
@@ -63,6 +77,11 @@ public class BookingService {
 
 		BigDecimal total = priceFor(car.dailyRate(), request.startDate(), request.endDate());
 
+		return transaction.execute(status -> saveBooking(customerId, customerEmail, request, car, total));
+	}
+
+	private BookingResponse saveBooking(Long customerId, String customerEmail, BookingRequest request,
+			InternalCarView car, BigDecimal total) {
 		Booking booking = bookingRepository.save(new Booking(
 				customerId, customerEmail,
 				car.id(), car.make(), car.model(), car.type(), car.dailyRate(),
@@ -232,7 +251,11 @@ public class BookingService {
 	 * boundary that owns the booking data. Doing it the other way round would
 	 * have made catalog depend on reservation, which already depends on catalog.
 	 */
-	@Transactional(readOnly = true)
+	/**
+	 * Not {@code @Transactional}, for the same reason as {@link #create}: the
+	 * catalog call must not hold a database connection. The one query below
+	 * runs in the repository's own short read-only transaction.
+	 */
 	public List<AvailableCarResponse> findAvailable(String location, String type,
 			LocalDate startDate, LocalDate endDate) {
 		List<InternalCarView> candidates = catalogClient.findRentable(location, type);
