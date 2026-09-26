@@ -153,3 +153,5 @@ vite.config.ts.timestamp-*
 **/.DS_Store
 
 .secrets
+# perf/run.sh output - keep the ones you cite by copying them into docs/
+perf/results/

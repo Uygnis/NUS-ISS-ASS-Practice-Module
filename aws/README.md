@@ -170,10 +170,12 @@ The daily loop on the shared account becomes: someone runs `make aws-up` once in
 the morning, and from then on **merging deploys**. Nobody else needs AWS
 credentials to ship.
 
-**Both branches deploy to the same cluster.** There is one environment, not a
-dev and a prod, so the most recent deploy is what is live regardless of which
-branch produced it. Each run's step summary names its branch, which is the only
-way to work out who overwrote whom.
+**Each branch deploys to its own environment.** A merge to `dev` deploys to the
+`dev` GitHub Environment (cluster `rentez-dev`, database `rentez_dev`, its own
+CloudFront URL) and a merge to `main` to `prod` — see step 3b below. They share
+the VPC, the ECR repositories and the RDS instance; they do not share a cluster,
+a database or a URL. Each run's step summary names the environment, the cluster
+and the URL it deployed to.
 
 ### Why OIDC and not `GITHUB_TOKEN`
 
@@ -342,12 +344,18 @@ require a frontend rebuild. See the long note in `frontend/vite.config.js`.
 
 ### Layers
 
-| File | Lifetime | Cost at rest |
-|---|---|---|
-| `cloudformation/00-guardrails.yaml` | forever, survives `aws-nuke` | $0 |
-| `cloudformation/10-persistent.yaml` | until `aws-nuke` | ~$0.80/mo |
-| `cloudformation/20-database.yaml` | `aws-up` → `aws-down` | — |
-| `eksctl/cluster.yaml` | `aws-up` → `aws-down` | — |
+| File | Scope | Lifetime | Cost at rest |
+|---|---|---|---|
+| `cloudformation/00-guardrails.yaml` | account | forever, survives `aws-nuke` | $0 |
+| `cloudformation/10-account.yaml` | account | until `aws-nuke` | ~$0 |
+| `cloudformation/15-environment.yaml` | environment | until `aws-nuke` | ~$0.80/mo |
+| `cloudformation/10-persistent.yaml` | pre-split accounts only | until `aws-nuke` | ~$0.80/mo |
+| `cloudformation/20-database.yaml` | environment | `aws-up` → `aws-down` | — |
+| `eksctl/cluster.yaml` | environment | `aws-up` → `aws-down` | — |
+
+`10-persistent.yaml` is the pre-split stack that held all of it; it stays in the
+tree for accounts bootstrapped before the split. See *Adopting an account
+bootstrapped before the split* below.
 
 `eksctl` is still CloudFormation: it generates and deletes
 `eksctl-rentez-*` stacks. Choosing it over hand-written EKS YAML saves several
@@ -533,10 +541,13 @@ confirm/cancel and stats endpoints are public.
 The application layer (Phase 1 — the PostgreSQL migration) is **verified**: 71
 backend tests, 33/33 end-to-end smoke checks against a clean volume.
 
-**The AWS layer in this directory has not been deployed.** It is statically
-validated — YAML parses, the eksctl template renders, `helm lint` and
-`helm template` pass for all five services, HPA bounds and path prefixes match
-the architecture document and `scripts/gateway.conf`, and every script passes
-`bash -n` — but no part of it has been run against a real account. Expect the
-first `make aws-bootstrap` and `make aws-up` to need iteration, and budget an
-afternoon for it. Run `make aws-status` liberally while you do.
+**The AWS layer in this directory has been deployed and run.** It is no longer
+only statically validated: the shared account has been bootstrapped, clusters
+have been brought up and torn down, and the pipeline has deployed to them. The
+round of fixes in #44–#50 — a missing notification ingress, API errors masked as
+`200 index.html`, logs that died with their pods, a status command that called a
+live environment "not bootstrapped", a smoke test that failed on its own
+leftovers — all came from running it rather than reading it.
+
+Expect it to still want attention on a fresh account, and run `make aws-status`
+liberally while you work.
