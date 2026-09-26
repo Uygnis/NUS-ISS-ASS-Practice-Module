@@ -92,7 +92,7 @@ echo "uploaded dumps/$STAMP.sql.gz (\${SIZE} bytes)"
 # DELETE A REJECTED DUMP, do not merely refuse it.
 # The upload streams, so a pg_dump that fails still leaves an object behind - an
 # empty gzip stream is 20 bytes. Left in place it becomes the NEWEST dump, and
-# the next `make aws-up` restores it in preference to the last good one,
+# the next \`make aws-up\` restores it in preference to the last good one,
 # reporting success while loading nothing. Failing loudly is not enough; the
 # artefact has to go too.
 if [ "\$SIZE" -le 1000 ]; then
