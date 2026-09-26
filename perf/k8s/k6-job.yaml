@@ -1,0 +1,40 @@
+# RentEZ - k6 as a one-off Job inside the cluster. Rendered and applied by
+# `TARGET=cluster perf/run.sh <test>`; the __PLACEHOLDERS__ are filled there.
+#
+# Why in-cluster: from a laptop, the uplink and CloudFront sit between k6 and
+# the pods, and either can become the bottleneck before the pods do. Here the
+# load reaches the ALB from inside the VPC.
+#
+# It runs on the same node group it is loading. k6 is requested at 1 CPU so the
+# scheduler accounts for it, and that is noted in the results.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k6-__TEST__
+  namespace: __NAMESPACE__
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: k6
+          image: grafana/k6:latest
+          args: ["run", "/scripts/__TEST__.js"]
+          env:
+            - { name: BASE_URL, value: "__BASE_URL__" }
+            - { name: RATE, value: "__RATE__" }
+            - { name: PEAK, value: "__PEAK__" }
+          resources:
+            requests: { cpu: "1", memory: 512Mi }
+            limits: { cpu: "2", memory: 1Gi }
+          volumeMounts:
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - name: scripts
+          configMap:
+            name: k6-scripts
+            items:
+              - { key: __TEST__.js, path: __TEST__.js }
+              - { key: flow.js, path: lib/flow.js }
