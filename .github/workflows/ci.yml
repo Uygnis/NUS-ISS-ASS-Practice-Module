@@ -104,7 +104,7 @@ jobs:
 
       - name: SonarCloud analysis
         if: success()
-        working-directory: services/account-service
+        working-directory: services/${{ matrix.service }}
         run: >
           ./mvnw
           org.sonarsource.scanner.maven:sonar-maven-plugin:sonar
