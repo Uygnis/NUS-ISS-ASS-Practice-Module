@@ -83,7 +83,7 @@ if [ "$fail" -eq 0 ]; then
 		fi
 	done
 
-	EXPIRES="$(aws ssm get-parameter --name /rentez/env/expires-at \
+	EXPIRES="$(aws ssm get-parameter --name "${EXPIRES_PARAM:-/rentez/env/expires-at}" \
 		--query Parameter.Value --output text 2>/dev/null)"
 	if [ -n "$EXPIRES" ] && [ "$EXPIRES" != "none" ]; then
 		amber "lease" "$EXPIRES — something is running. 'make aws-status' for details"

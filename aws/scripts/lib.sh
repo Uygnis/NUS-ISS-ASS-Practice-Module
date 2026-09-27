@@ -39,6 +39,19 @@ DB_NAME="${DB_NAME:-rentez}"
 # unsuffixed resource names, so the pre-split environment is adopted rather
 # than rebuilt.
 ENVIRONMENT_NAME="${ENVIRONMENT_NAME:-}"
+
+# This environment's lease and holder, by the same rule 15-environment.yaml
+# uses to name ExpiresAtParam. These were hardcoded to /rentez/env/..., so with
+# two environments `make aws-up` for dev armed PROD's timer (dev's reaper, which
+# reads /rentez/env/dev/expires-at, was never armed), and `make aws-down` for dev
+# disarmed prod's.
+if [ -n "$ENVIRONMENT_NAME" ]; then
+	ENV_PARAM_PREFIX="/rentez/env/$ENVIRONMENT_NAME"
+else
+	ENV_PARAM_PREFIX="/rentez/env"
+fi
+EXPIRES_PARAM="$ENV_PARAM_PREFIX/expires-at"
+HELD_BY_PARAM="$ENV_PARAM_PREFIX/held-by"
 SERVICES=(account-service catalog-service reservation-service payment-service notification-service)
 
 # Pod image used for every one-off database task. Chosen so that no custom image
@@ -290,13 +303,13 @@ arm_reaper() {
 import datetime as dt
 print((dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=$hours)).replace(microsecond=0).isoformat())
 ")"
-	aws ssm put-parameter --name /rentez/env/expires-at --type String \
+	aws ssm put-parameter --name "$EXPIRES_PARAM" --type String \
 		--value "$deadline" --overwrite >/dev/null
 	printf '%s' "$deadline"
 }
 
 disarm_reaper() {
-	aws ssm put-parameter --name /rentez/env/expires-at --type String \
+	aws ssm put-parameter --name "$EXPIRES_PARAM" --type String \
 		--value none --overwrite >/dev/null 2>&1 || true
 }
 
@@ -316,7 +329,7 @@ disarm_reaper() {
 #
 # Stored as "<name>|<iso-8601 UTC>".
 hold_env() {
-	aws ssm put-parameter --name /rentez/env/held-by --type String \
+	aws ssm put-parameter --name "$HELD_BY_PARAM" --type String \
 		--value "$(caller_name)|$(python3 -c "
 import datetime as dt
 print(dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat())
@@ -324,13 +337,13 @@ print(dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat())
 }
 
 release_env() {
-	aws ssm put-parameter --name /rentez/env/held-by --type String \
+	aws ssm put-parameter --name "$HELD_BY_PARAM" --type String \
 		--value none --overwrite >/dev/null 2>&1 || true
 }
 
 # Prints "<name>|<iso>" or "none".
 current_holder() {
-	aws ssm get-parameter --name /rentez/env/held-by \
+	aws ssm get-parameter --name "$HELD_BY_PARAM" \
 		--query Parameter.Value --output text 2>/dev/null || printf 'none'
 }
 

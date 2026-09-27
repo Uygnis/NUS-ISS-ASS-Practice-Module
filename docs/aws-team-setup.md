@@ -309,6 +309,18 @@ instance, with the five per-service schemas created in each by `make aws-up`. A
 second instance would be a second hourly bill for isolation the database
 already provides.
 
+Because the instance is shared, **only the last environment standing deletes
+it.** `make aws-down` and each environment's reaper keep the database stack
+while any other `rentez*` cluster exists, and say so; this environment's data is
+already safe in its own backup bucket by then. Before this, taking dev down
+deleted prod's database with it.
+
+Each environment also has its own lease: `/rentez/env/<name>/expires-at` and
+`/rentez/env/<name>/held-by`, or `/rentez/env/...` for the unsuffixed original,
+derived from `ENVIRONMENT_NAME` in `lib.sh` by the same rule the template uses.
+Before this, every script read and wrote the original's, so `make aws-up` for dev
+armed prod's timer and dev's own reaper was never armed.
+
 `10-persistent.yaml` stays in the tree because the account bootstrapped before
 the split still runs on it. It needs no migration: that one stack publishes all
 twelve outputs the two new ones publish between them, so setting
