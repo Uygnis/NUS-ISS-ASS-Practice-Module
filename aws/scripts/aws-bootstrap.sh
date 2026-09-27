@@ -144,9 +144,9 @@ cat <<EOF
                   (bookmark it — it survives every teardown)
 
   Next:
-    make aws-up          bring the cluster and database up  (~20 min)
-    make aws-status      see what is running and when it expires
-    make aws-down        dump to S3 and tear it all down    (~15 min)
+    make aws-up-$MAKE_ENV      bring the cluster and database up  (~20 min)
+    make aws-status-$MAKE_ENV  see what is running and when it expires
+    make aws-down-$MAKE_ENV    dump to S3 and tear it all down    (~15 min)
 
   The reaper is armed by aws-up and will tear the cluster down on its own if
   you forget. Confirm the budget email so you hear about it if it does not.

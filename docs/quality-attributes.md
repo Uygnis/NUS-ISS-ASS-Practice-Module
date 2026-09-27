@@ -169,6 +169,49 @@ until the system was under concurrent load.
 never have helped. The services were blocked, not busy, so more load produced
 more timeouts and no CPU for the HPA to see.
 
+### On AWS: performance and scalability
+
+Run on 2026-09-27 against the dev environment (`7cfb12b`, the merged fixes):
+EKS 1.31 on two spot t3/m5.large nodes, one `db.t4g.micro` RDS instance, all
+traffic from a laptop through CloudFront. HPA and node counts recorded every
+15 s by `watch-scaling.sh`.
+
+| Test | Load | p95 | p99 | Errors | Most pods (res / cat / pay / acc) | Nodes |
+|---|---|---|---|---|---|---|
+| smoke | 1 user | 83 ms | — | 0% | 2 / 2 / 2 / 2 | 2 |
+| load | 50/s | 150 ms | 371 ms | 0% | 7 / 5 / 4 / 3 | 2 |
+| load | 100/s | **56 ms** | **97 ms** | **0%** | 9 / 5 / 4 / 4 | 2 |
+| stress, before CA fix | ramp to 300 users, ~317 req/s | 1.24 s | — | 1.16% | 10 / 6 / 4 / 2 | **2 (8 pods Pending ~15 min)** |
+| stress, after CA fix | ramp to 300 users, ~290 req/s | 1.02 s | — | 0.99% | 10 / 6 / 4 / 3 | **2 → 3** |
+
+The 50/s run was slower than the 100/s one because it paid for the scale-up
+inside its measured window; 100/s started with pods already scaled.
+
+**What the stress test shows, after the fix:** load rises, reservation's CPU
+crosses 60% of its request at minute 3, the HPA takes it from 2 to 10 pods by
+minute 6, three pods cannot be placed, the Cluster Autoscaler adds a third node
+at minute 5 and the Pending pods clear within a minute. Per-pod CPU then falls
+from ~200% to ~60% while load is still at peak. When load stops, replicas hold
+for the 300 s window and then shrink.
+
+![AWS stress, Cluster Autoscaler working](perf/aws-stress-after-ca-fix.png)
+
+**What it found first:** the Cluster Autoscaler had never worked. `aws-up.sh`
+installed the chart without an image tag, so it ran v1.35.0 against a 1.31
+control plane. It watched APIs 1.31 does not serve (`ResourceSlice`,
+`ResourceClaim`, `DeviceClass`), its informers never synced, and its main loop
+never ran - it logged nothing but those watch errors while 8 pods sat Pending
+for 15 minutes on 2 nodes of a 5-node group. The image is now pinned to
+v1.31.5, and `aws-up` refuses to install a version whose minor differs from the
+cluster's.
+
+![AWS stress, before the fix: pods Pending, nodes flat](perf/aws-stress-before-ca-fix.png)
+
+**The remaining ~1% of errors** fell at peak load after scaling had finished,
+with reservation and catalog both at their HPA maximums (10 and 6) and catalog
+still at ~150% of its CPU request - the ceiling the HPA bounds allow, not a
+failure to scale. ~96% of them were the masked 401s described below.
+
 ## Known limits (report these — they are findings, not failures)
 
 - **CPU is the wrong scaling signal for pool exhaustion.** The fixes make CPU
@@ -181,7 +224,9 @@ more timeouts and no CPU for the HPA to see.
 - **Errors can surface as 401.** An exception forwarded to Spring's `/error`
   page is blocked by Spring Security for anonymous callers, so a public
   endpoint that fails returns 401 instead of its real status. Seen 27 times on
-  `/api/catalog/cars` at 300/s. Fix: permit `/error` in each `SecurityConfig`.
+  `/api/catalog/cars` at 300/s locally, and ~2,500 times in the AWS stress test,
+where it hid most of the real errors. Fix: permit `/error` in each
+`SecurityConfig`.
 - **Pool size versus RDS.** 3 connections per pod is what keeps 25 pods under
   `db.t4g.micro`'s ~112 connections. Raising it needs RDS Proxy (or fewer max
   replicas) - see [ch01](ch01.startup-project.adoc).
@@ -195,5 +240,7 @@ more timeouts and no CPU for the HPA to see.
 - **Scale-down is slow on purpose** (300s window), trading a few minutes of
   idle pods for not thrashing spot nodes.
 - **Local runs measure performance only.** Docker Compose has no autoscaler;
-  scalability is only demonstrable on EKS. The AWS stress test has not been
-  run yet.
+  scalability is only demonstrable on EKS.
+- **HPA maximums cap peak throughput.** At 300 users reservation (10) and
+  catalog (6) sat at their maximums with the third node half-empty. Raising
+  those bounds, within the RDS connection budget, is the next lever.

@@ -35,7 +35,13 @@ PUBLIC_SUBNETS="$(stack_output "$ACCOUNT_STACK" PublicSubnetIds)"
 PRIVATE_SUBNETS="$(stack_output "$ACCOUNT_STACK" PrivateSubnetIds)"
 IFS=',' read -r PUBLIC_SUBNET_A PUBLIC_SUBNET_B <<<"$PUBLIC_SUBNETS"
 IFS=',' read -r PRIVATE_SUBNET_A PRIVATE_SUBNET_B <<<"$PRIVATE_SUBNETS"
-export VPC_ID PUBLIC_SUBNET_A PUBLIC_SUBNET_B PRIVATE_SUBNET_A PRIVATE_SUBNET_B AWS_REGION AWS_ACCOUNT_ID CLUSTER_NAME
+# NAMESPACE and BACKUP_BUCKET are per environment and feed the service accounts
+# in cluster.yaml. Both were hardcoded to the original environment's: a dev
+# cluster got its rentez-app and rentez-backup accounts in namespace `rentez`,
+# not `rentez-dev`, so the database bootstrap pod could not start - and the
+# backup account could only write to prod's bucket.
+BACKUP_BUCKET="$(stack_output "$ENVIRONMENT_STACK" BackupBucketName)"
+export VPC_ID PUBLIC_SUBNET_A PUBLIC_SUBNET_B PRIVATE_SUBNET_A PRIVATE_SUBNET_B AWS_REGION AWS_ACCOUNT_ID CLUSTER_NAME NAMESPACE BACKUP_BUCKET
 
 # The image tag defaults to the current commit, which is what CI tagged. Refuse
 # to guess: deploying a tag that was never built fails 10 minutes later with
@@ -333,14 +339,27 @@ helm upgrade --install aws-for-fluent-bit eks/aws-for-fluent-bit \
 	--wait >/dev/null
 ok "fluent-bit — logs at /rentez/cluster, kept $LOG_RETENTION_DAYS days"
 
+# PINNED TO THE CLUSTER'S MINOR VERSION, and checked against it. Unpinned, the
+# chart installs the newest image, which watches APIs a 1.31 control plane does
+# not serve (ResourceSlice, ResourceClaim, DeviceClass). Its informers then never
+# sync, the scaling loop never runs, and it logs nothing but those watch errors:
+# the stress test left 8 pods Pending for 15 minutes on 2 nodes of a 5-node group.
+# Bump this together with `version:` in aws/eksctl/cluster.yaml.
+CLUSTER_AUTOSCALER_VERSION="${CLUSTER_AUTOSCALER_VERSION:-v1.31.5}"
+K8S_MINOR="$(aws eks describe-cluster --name "$CLUSTER_NAME" --query cluster.version --output text)"
+case "$CLUSTER_AUTOSCALER_VERSION" in
+v"$K8S_MINOR".*) ;;
+*) die "cluster-autoscaler $CLUSTER_AUTOSCALER_VERSION does not match Kubernetes $K8S_MINOR. Set CLUSTER_AUTOSCALER_VERSION in aws-up.sh to the newest v$K8S_MINOR.x." ;;
+esac
 helm upgrade --install cluster-autoscaler autoscaler/cluster-autoscaler \
 	--namespace kube-system \
 	--set "autoDiscovery.clusterName=$CLUSTER_NAME" \
 	--set "awsRegion=$AWS_REGION" \
+	--set "image.tag=$CLUSTER_AUTOSCALER_VERSION" \
 	--set rbac.serviceAccount.create=false \
 	--set rbac.serviceAccount.name=cluster-autoscaler \
 	--wait >/dev/null
-ok "cluster-autoscaler"
+ok "cluster-autoscaler $CLUSTER_AUTOSCALER_VERSION (Kubernetes $K8S_MINOR)"
 
 # ------------------------------------------------------- 4. schema + restore
 step "4/5  Database bootstrap"
@@ -502,6 +521,12 @@ OWNEOF
 	rm -f "$OWNERS_SH"
 else
 	ok "no dump to restore — Flyway and the seed profile will build a fresh database"
+	# This used to be only a claim: nothing enabled the profile, so a fresh
+	# environment came up with no cars and no admin, and every booking in the
+	# smoke test failed. Enabled only here, for the first deploy onto an empty
+	# database - the seeders are idempotent, but the demo admin has a known
+	# password and has no business being re-created on a restored one.
+	SEED=1
 fi
 
 # ------------------------------------------------------- 5. the application
@@ -509,7 +534,7 @@ fi
 # its own script: a redeploy does not have to start from the top of this one,
 # and CI runs the very same file on every merge to main.
 step "5/5  Application"
-SUMMARY=0 TAG="$TAG" "$(dirname "${BASH_SOURCE[0]}")/aws-deploy.sh"
+SUMMARY=0 TAG="$TAG" SEED="${SEED:-0}" "$(dirname "${BASH_SOURCE[0]}")/aws-deploy.sh"
 
 # Re-arm, so the full TTL is measured from a WORKING environment rather than
 # from whenever this run happened to start. Deliberately here and not in
@@ -526,8 +551,8 @@ cat <<EOF
   Expires    $DEADLINE  (in ${TTL_HOURS}h)
 
   The reaper will tear this down automatically at that time. To finish early
-  and take a backup:            make aws-down
-  To extend the lease:          make aws-extend HOURS=4
+  and take a backup:            make aws-down-$MAKE_ENV
+  To extend the lease:          make aws-extend-$MAKE_ENV HOURS=4
 
   Costing roughly \$0.21/hour from now.
 

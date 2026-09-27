@@ -71,7 +71,7 @@ fi
 
 # ------------------------------------------------------------------ the lease
 printf "\n"
-EXPIRES="$(aws ssm get-parameter --name /rentez/env/expires-at --query Parameter.Value --output text 2>/dev/null || echo none)"
+EXPIRES="$(aws ssm get-parameter --name "$EXPIRES_PARAM" --query Parameter.Value --output text 2>/dev/null || echo none)"
 if [ "$EXPIRES" = "none" ]; then
 	if [ "$HOURLY" != "0" ]; then
 		# The dangerous state: things are running and nothing will stop them.

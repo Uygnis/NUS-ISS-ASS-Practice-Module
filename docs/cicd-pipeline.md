@@ -109,6 +109,18 @@ sequenceDiagram
   `conclusion == 'success'` — without that, a red CI run deploys anyway. That
   guard was missing from `prod.yml` for a while, which is the one place it must
   never be.
+- **Deploy the commit CI tested, not `github.sha`.** Inside a `workflow_run`,
+  `github.sha` and a bare `actions/checkout` both resolve to the *default*
+  branch. Until this was fixed, Deploy Dev built and shipped `main`'s code while
+  its summary said "dev" — every dev deploy since the branch split. `dev.yml`
+  and `prod.yml` now pass `github.event.workflow_run.head_sha` as `deploy.yml`'s
+  `sha` input, which drives the checkout, both image tags and `TAG=`. A manual
+  run leaves it empty and gets the ref it was dispatched on.
+- **Only CI runs from a push deploy.** CI also runs on pull requests, and a PR
+  whose head is `dev` completes CI on the same commit, so each merge fired two
+  deploys; the second failed with `failed to reserve cache`. The cache export
+  also carries `ignore-error=true` now: a refused cache write should cost a
+  slower next build, not a failed deploy.
 - **The configured-or-not check is a job, not a job-level `if`.** A job-level
   `if` is evaluated *before* the job binds its Environment, so it reads only
   repository-level variables and skips every correctly configured run. The
