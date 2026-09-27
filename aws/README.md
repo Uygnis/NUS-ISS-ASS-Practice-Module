@@ -515,6 +515,14 @@ eksctl create accessentry --cluster rentez --principal-arn <role-arn> \
 **`kubectl get hpa` shows `<unknown>` for CPU.** metrics-server did not install.
 The HPAs cannot scale without it, and nothing else reports an error.
 
+**Pods stay `Pending` and no node is ever added.** Check the Cluster
+Autoscaler's version against the cluster's:
+`kubectl -n kube-system get deploy cluster-autoscaler-aws-cluster-autoscaler -o jsonpath='{..image}'`.
+A newer minor than the control plane watches APIs the cluster does not serve,
+logs only `Failed to watch ... ResourceSlice` errors, and never runs its scaling
+loop. `aws-up.sh` pins `CLUSTER_AUTOSCALER_VERSION` and refuses a mismatch; bump
+it together with `version:` in `eksctl/cluster.yaml`.
+
 **An Ingress never gets an ADDRESS.** Usually the AWS Load Balancer Controller.
 `kubectl -n kube-system logs deploy/aws-load-balancer-controller`. If it
 complains about discovering subnets, check the `kubernetes.io/role/elb` tags on

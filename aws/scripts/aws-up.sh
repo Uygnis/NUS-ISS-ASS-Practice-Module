@@ -333,14 +333,27 @@ helm upgrade --install aws-for-fluent-bit eks/aws-for-fluent-bit \
 	--wait >/dev/null
 ok "fluent-bit — logs at /rentez/cluster, kept $LOG_RETENTION_DAYS days"
 
+# PINNED TO THE CLUSTER'S MINOR VERSION, and checked against it. Unpinned, the
+# chart installs the newest image, which watches APIs a 1.31 control plane does
+# not serve (ResourceSlice, ResourceClaim, DeviceClass). Its informers then never
+# sync, the scaling loop never runs, and it logs nothing but those watch errors:
+# the stress test left 8 pods Pending for 15 minutes on 2 nodes of a 5-node group.
+# Bump this together with `version:` in aws/eksctl/cluster.yaml.
+CLUSTER_AUTOSCALER_VERSION="${CLUSTER_AUTOSCALER_VERSION:-v1.31.5}"
+K8S_MINOR="$(aws eks describe-cluster --name "$CLUSTER_NAME" --query cluster.version --output text)"
+case "$CLUSTER_AUTOSCALER_VERSION" in
+v"$K8S_MINOR".*) ;;
+*) die "cluster-autoscaler $CLUSTER_AUTOSCALER_VERSION does not match Kubernetes $K8S_MINOR. Set CLUSTER_AUTOSCALER_VERSION in aws-up.sh to the newest v$K8S_MINOR.x." ;;
+esac
 helm upgrade --install cluster-autoscaler autoscaler/cluster-autoscaler \
 	--namespace kube-system \
 	--set "autoDiscovery.clusterName=$CLUSTER_NAME" \
 	--set "awsRegion=$AWS_REGION" \
+	--set "image.tag=$CLUSTER_AUTOSCALER_VERSION" \
 	--set rbac.serviceAccount.create=false \
 	--set rbac.serviceAccount.name=cluster-autoscaler \
 	--wait >/dev/null
-ok "cluster-autoscaler"
+ok "cluster-autoscaler $CLUSTER_AUTOSCALER_VERSION (Kubernetes $K8S_MINOR)"
 
 # ------------------------------------------------------- 4. schema + restore
 step "4/5  Database bootstrap"

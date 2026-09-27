@@ -31,6 +31,8 @@ metadata:
   # 1.31+ so the in-tree cloud provider removals and the current AWS Load
   # Balancer Controller are both settled. Pin it: an unpinned version means two
   # teammates create structurally different clusters a fortnight apart.
+  # Changing it? Change CLUSTER_AUTOSCALER_VERSION in aws-up.sh to the same
+  # minor - aws-up refuses to continue until you do.
   version: "1.31"
   tags:
     Project: rentez
