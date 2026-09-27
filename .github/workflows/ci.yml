@@ -101,7 +101,11 @@ jobs:
       ###############################################################################
       # SonarCloud Code Quality Analysis
       ###############################################################################
-
+      - name: Print current location
+        run: |
+          pwd
+          ls -la
+          ls -la target/site/jacoco/
       - name: SonarCloud analysis
         if: success()
         run: >
