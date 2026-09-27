@@ -25,9 +25,18 @@ jobs:
   deploy:
     # A workflow_dispatch has no workflow_run to inspect, so `conclusion` is
     # empty and the bare check would silently skip every manual run.
+    #
+    # Push runs only. CI also runs on pull requests, and a PR whose head is
+    # this branch completes CI on the SAME commit, so each merge fired two
+    # deploys; the second died on "failed to reserve cache".
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
     uses: ./.github/workflows/deploy.yml
     with:
       environment: dev
+      # The commit CI actually tested. Without it deploy.yml falls back to
+      # github.sha, which under workflow_run is the default branch's head.
+      # Empty on a manual run, where github.sha is already the chosen ref.
+      sha: ${{ github.event.workflow_run.head_sha }}
