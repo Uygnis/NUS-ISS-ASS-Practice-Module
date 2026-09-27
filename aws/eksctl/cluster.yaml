@@ -118,7 +118,7 @@ iam:
 
     - metadata:
         name: rentez-app
-        namespace: rentez
+        namespace: "${NAMESPACE}"
       attachPolicy:
         Version: "2012-10-17"
         Statement:
@@ -143,15 +143,18 @@ iam:
     # service should not be able to overwrite the backups.
     - metadata:
         name: rentez-backup
-        namespace: rentez
+        namespace: "${NAMESPACE}"
       attachPolicy:
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Action: [s3:PutObject, s3:GetObject, s3:ListBucket]
             Resource:
-              - "arn:aws:s3:::rentez-backups-${AWS_ACCOUNT_ID}"
-              - "arn:aws:s3:::rentez-backups-${AWS_ACCOUNT_ID}/*"
+              # This environment's bucket, from its environment stack -
+              # rentez-backups-<account> for the original, -dev-/-prod- for
+              # the others.
+              - "arn:aws:s3:::${BACKUP_BUCKET}"
+              - "arn:aws:s3:::${BACKUP_BUCKET}/*"
 
 managedNodeGroups:
   - name: rentez-spot

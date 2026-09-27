@@ -133,7 +133,6 @@ Resources:
         # them wrong and ingress creation fails with "unable to discover
         # subnets", which reads like a permissions problem and is not.
         - { Key: kubernetes.io/role/elb, Value: "1" }
-        - { Key: !Sub "kubernetes.io/cluster/${ClusterName}", Value: shared }
 
   PublicSubnetB:
     Type: AWS::EC2::Subnet
@@ -146,7 +145,11 @@ Resources:
         - { Key: Name, Value: !Sub "${ClusterName}-public-b" }
         - { Key: Project, Value: rentez }
         - { Key: kubernetes.io/role/elb, Value: "1" }
-        - { Key: !Sub "kubernetes.io/cluster/${ClusterName}", Value: shared }
+        # NO kubernetes.io/cluster/<name> tag, on either subnet. The Load
+        # Balancer Controller drops any subnet tagged for a cluster other than
+        # its own, so tagging these for `rentez` hid them from rentez-dev: its
+        # ALB never got an address ("2 are tagged for other clusters"). The
+        # role tag alone serves every cluster. 10-account.yaml already had this.
 
   # RDS only. Nothing here needs outbound internet, which is what makes losing
   # the NAT gateway painless.

@@ -92,8 +92,17 @@ step "1/2  Services"
 kubectl apply -f "$REPO_ROOT/deploy/k8s/00-internal-deny.yaml" >/dev/null
 ok "internal-path deny rule"
 
+# SEED=1 only from aws-up, onto an empty database (see there). A later deploy
+# without it drops the profile again; the seeded rows stay.
+SEED_ARGS=()
+if [ "${SEED:-0}" = "1" ]; then
+	SEED_ARGS=(--set "env.SPRING_PROFILES_ACTIVE=seed")
+	say "seed profile on for this deploy: empty database"
+fi
+
 for svc in "${SERVICES[@]}"; do
 	helm upgrade --install "$svc" "$REPO_ROOT/deploy/helm/rentez-service" \
+		${SEED_ARGS[@]+"${SEED_ARGS[@]}"} \
 		--namespace "$NAMESPACE" \
 		--values "$REPO_ROOT/deploy/helm/values/${svc%-service}.yaml" \
 		--set "image.registry=$REGISTRY" \
