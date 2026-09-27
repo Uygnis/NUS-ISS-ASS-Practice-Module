@@ -281,8 +281,8 @@ Resources:
   DbParameterGroup:
     Type: AWS::RDS::DBParameterGroup
     Properties:
-      Description: RentEZ PostgreSQL 16 - explicit connection ceiling
-      Family: postgres16
+      Description: RentEZ PostgreSQL 17 - explicit connection ceiling
+      Family: postgres17
       Parameters:
         # DELIBERATELY LEFT AT THE ENGINE DEFAULT, which is
         # LEAST({DBInstanceClassMemory/9531392}, 5000) - about 112 on a

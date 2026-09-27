@@ -131,7 +131,7 @@ It also asserts the things that regress silently: no BCrypt hash in any response
 make test-backend
 ----
 
-71 tests across the five services, each against a real PostgreSQL 16 container via Testcontainers. This is also the only place the Flyway migrations run automatically and Hibernate validates the entities against them.
+71 tests across the five services, each against a real PostgreSQL 17 container via Testcontainers. This is also the only place the Flyway migrations run automatically and Hibernate validates the entities against them.
 
 NOTE: These need Docker. Without it, use `./mvnw verify -DskipTests` to compile only.
 

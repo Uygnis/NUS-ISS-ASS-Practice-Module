@@ -325,7 +325,7 @@ Browser ──HTTPS──▶ CloudFront (permanent, free at rest)
      account 2→4 · catalog 2→6 · reservation 2→10 · payment 2→4 · notification 1
                                  │ JDBC
                      ┌───────────▼────────────────────────┐
-                     │ RDS PostgreSQL 16 · db.t4g.micro   │
+                     │ RDS PostgreSQL 17 · db.t4g.micro   │
                      │ private subnets · 5 schemas, 5 roles│
                      └────────────────────────────────────┘
 ```
@@ -370,7 +370,7 @@ Flyway and `SPRING_PROFILES_ACTIVE=seed` build a fresh world.
 There is deliberately **one** backup mechanism, not two. The RDS stack's
 `DeletionPolicy` is `Delete` rather than `Snapshot`, because one path that always
 runs and is verified beats two that are each half-trusted. A plain SQL dump is
-also portable — it restores into any Postgres 16, where a snapshot only restores
+also portable — it restores into any Postgres 17 or later, where a snapshot only restores
 into RDS.
 
 RDS is in private subnets with no public route, so the dump runs from a

@@ -32,7 +32,7 @@ flowchart TB
             NOT[notification-service<br/>/api/notifications]
         end
 
-        RDS[(RDS PostgreSQL 16<br/>db.t4g.micro, private subnets<br/>5 schemas, 5 roles)]
+        RDS[(RDS PostgreSQL 17<br/>db.t4g.micro, private subnets<br/>5 schemas, 5 roles)]
     end
 
     subgraph Managed["Managed, always-on"]

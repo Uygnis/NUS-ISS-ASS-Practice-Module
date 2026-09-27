@@ -77,7 +77,7 @@ SERVICES=(account-service catalog-service reservation-service payment-service no
 
 # Pod image used for every one-off database task. Chosen so that no custom image
 # has to be built and pushed before the first teardown can take a backup.
-DB_TOOLS_IMAGE="postgres:16-alpine"
+DB_TOOLS_IMAGE="postgres:17-alpine"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
