@@ -131,7 +131,7 @@ jobs:
           echo "=== Project ==="
           curl -sS \
             -u "${SONAR_TOKEN}:" \
-            "https://sonarcloud.io/api/projects/search?projects=rentez-${{ matrix.service }}"
+            "https://sonarcloud.io/api/projects/search?projects=rentez-${{ matrix.service }}&organization=${{ secrets.SONAR_ORGANIZATION }}"
       - name: SonarCloud analysis
         if: success()
         run: >
