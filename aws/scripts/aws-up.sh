@@ -91,7 +91,7 @@ else
 	aws cloudformation deploy \
 		--stack-name "$DATABASE_STACK" \
 		--template-file "$REPO_ROOT/aws/cloudformation/20-database.yaml" \
-		--parameter-overrides "Owner=$OWNER" \
+		--parameter-overrides "Owner=$OWNER" "EnvironmentName=$ENVIRONMENT_NAME" \
 		--no-fail-on-empty-changeset >/dev/null &
 	DB_PID=$!
 fi

@@ -263,12 +263,10 @@ the HPA has to react; the maximum and the RDS budget are unchanged), and the
   Raising catalog's minimum to 3 buys headroom; the fix is to scale on
   `hikaricp.connections.pending` (already exposed by actuator) through KEDA or
   the Prometheus adapter.
-- **Pool size versus RDS - now shared by two environments.** 3 connections per
-  pod keeps one environment's 25 max pods at 75, under `db.t4g.micro`'s ~112.
-  Dev and prod share that instance, so **both at full scale-out would want
-  150** and exhaust it. Fine while only one runs at a time; running both under
-  load needs RDS Proxy, a larger instance class, or lower HPA maximums - see
-  [ch01](ch01.startup-project.adoc).
+- **Pool size versus RDS.** 3 connections per pod keeps an environment's 25 max
+  pods at 75, under `db.t4g.micro`'s ~112. Each environment has its own
+  instance, so dev under load cannot starve prod. Raising the pool needs RDS
+  Proxy or a larger instance class - see [ch01](ch01.startup-project.adoc).
 - **notification-service does not autoscale.** It is a queue consumer; CPU
   stays low however deep the SQS backlog grows, so a CPU HPA would never fire.
   Future work: KEDA scaling on `ApproximateNumberOfMessagesVisible`.

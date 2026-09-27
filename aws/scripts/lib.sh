@@ -25,7 +25,6 @@ ACCOUNT_STACK="${ACCOUNT_STACK:-rentez-account}"
 # bootstrapped before the split" in aws/README.md.
 LEGACY_STACK="${LEGACY_STACK:-rentez-persistent}"
 ENVIRONMENT_STACK="${ENVIRONMENT_STACK:-rentez-environment}"
-DATABASE_STACK="${DATABASE_STACK:-rentez-database}"
 GUARDRAILS_STACK="${GUARDRAILS_STACK:-rentez-guardrails}"
 NAMESPACE="${NAMESPACE:-rentez}"
 
@@ -39,6 +38,15 @@ DB_NAME="${DB_NAME:-rentez}"
 # unsuffixed resource names, so the pre-split environment is adopted rather
 # than rebuilt.
 ENVIRONMENT_NAME="${ENVIRONMENT_NAME:-}"
+
+# This environment's database stack, and so its own RDS instance. Derived from
+# ENVIRONMENT_NAME like everything below, so CI needs no DATABASE_STACK variable:
+# an empty one falls through to this. The original keeps rentez-database.
+if [ -n "$ENVIRONMENT_NAME" ]; then
+	DATABASE_STACK="${DATABASE_STACK:-rentez-database-$ENVIRONMENT_NAME}"
+else
+	DATABASE_STACK="${DATABASE_STACK:-rentez-database}"
+fi
 
 # This environment's lease and holder, by the same rule 15-environment.yaml
 # uses to name ExpiresAtParam. These were hardcoded to /rentez/env/..., so with

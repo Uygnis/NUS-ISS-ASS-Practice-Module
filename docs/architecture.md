@@ -8,7 +8,8 @@ proxies `/api/*` to a single ALB in front of EKS.
 
 This describes **one** environment. The shared account runs two of them — `dev`
 and `prod` — each with its own cluster, namespace, CloudFront distribution and
-URL, sharing the VPC, the ECR repositories and the RDS *instance* underneath.
+URL, and each with its own RDS instance - sharing only the VPC and the ECR
+repositories underneath.
 See [Two environments in one account](aws-team-setup.md#two-environments-in-one-account).
 
 ```mermaid
