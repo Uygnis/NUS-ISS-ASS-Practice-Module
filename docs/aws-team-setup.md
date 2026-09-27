@@ -128,20 +128,25 @@ Checks every tool, your credentials, and the state of the shared account.
 ```bash
 export AWS_PROFILE=rentez
 
-make aws-status                 # what is running, cost, who has it, time left
-make aws-up                     # ~20 min, 4-hour lease, ~$0.21/hr
-make aws-deploy                 # ~3 min, redeploy code only
-make aws-extend HOURS=4         # push the lease out
-make aws-down                   # dump to S3, then destroy hourly-billed things
+make aws-status-dev             # what is running, cost, who has it, time left
+make aws-up-dev                 # ~20 min, 4-hour lease, ~$0.21/hr
+make aws-deploy-dev TAG=abc1234 # ~3 min, redeploy code only
+make aws-extend-dev HOURS=4     # push the lease out
+make aws-down-dev               # dump to S3, then destroy hourly-billed things
 ```
+
+Every target has a `-prod` twin (`make aws-up-prod`, `make aws-down-prod`, …)
+that acts on the `rentez` environment instead. The bare `make aws-up` and
+`make aws-down` refuse to run and ask which one you mean: with two environments
+in one account, guessing is how a teardown lands on the wrong one.
 
 Useful variants:
 
 ```bash
-make aws-up TTL_HOURS=8         # longer lease for a demo day
-make aws-up TAG=abc1234         # deploy a specific image tag
-make aws-up RESTORE=0           # start from an empty database
-make aws-down KEEP_DB=1         # keep RDS running (~$13/month) for tomorrow
+make aws-up-dev TTL_HOURS=8     # longer lease for a demo day
+make aws-up-dev TAG=abc1234     # deploy a specific image tag
+make aws-up-dev RESTORE=0       # start from an empty database
+make aws-down-dev KEEP_DB=1     # keep RDS running (~$13/month) for tomorrow
 ```
 
 `make aws-status` reports on the stacks the account **actually has**, not the
@@ -150,8 +155,7 @@ used to read as "not bootstrapped" while its cluster was up and billing. An
 `ACCOUNT_STACK` you set yourself is never quietly substituted, and the output
 names the stack whenever it is not the one the labels imply.
 
-`make aws-status` and `make aws-down` act on **one** environment — whichever
-`CLUSTER_NAME` and stack names are in your shell. With `dev` and `prod` both up,
+Each target acts on **one** environment — the one in its name. With `dev` and `prod` both up,
 tearing down the one you were working in leaves the other running.
 
 Reading logs does not need a cluster shell:
@@ -284,11 +288,8 @@ principal that created the cluster, so the pipeline needs an EKS *access entry*
 as well. `make aws-up` creates one when told the role ARN:
 
 ```bash
-export CI_ROLE_ARN=arn:aws:iam::<shared-account-id>:role/rentez-ci-deploy
-CLUSTER_NAME=rentez-dev NAMESPACE=rentez-dev \
-  ENVIRONMENT_STACK=rentez-environment-dev ENVIRONMENT_NAME=dev \
-  DB_NAME=rentez_dev \
-  make aws-up
+make aws-up-dev      # looks up rentez-ci-deploy and grants it access itself
+make aws-up-prod     # or pass CI_ROLE_ARN=... to use a different role
 ```
 
 Once per cluster — two environments means running this twice, each with its own

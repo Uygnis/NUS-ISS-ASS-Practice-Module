@@ -182,11 +182,14 @@ a Lambda tears everything down when it passes, so a forgotten cluster cannot
 become a $155 month.
 
 ```bash
-make aws-status      # what is running, burn rate, who has it, time left
-make aws-up          # ~20 min, 4-hour lease
-make aws-deploy      # ~3 min, redeploy code only — no infrastructure
-make aws-down        # dump to S3, then destroy everything billed by the hour
+make aws-status-dev  # what is running, burn rate, who has it, time left
+make aws-up-dev      # ~20 min, 4-hour lease
+make aws-deploy-dev  # ~3 min, redeploy code only — no infrastructure
+make aws-down-dev    # dump to S3, then destroy everything billed by the hour
 ```
+
+Each has a `-prod` twin for the `rentez` environment. The bare `make aws-up` and
+`make aws-down` ask which environment you mean rather than guess.
 
 `make aws-up` provisions; `make aws-deploy` deploys. That split is why a code
 change redeploys in three minutes instead of twenty, and why CI can deploy by

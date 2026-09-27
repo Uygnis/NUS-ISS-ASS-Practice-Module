@@ -51,6 +51,9 @@ else
 	ENV_PARAM_PREFIX="/rentez/env"
 fi
 EXPIRES_PARAM="$ENV_PARAM_PREFIX/expires-at"
+# The make-target suffix for this environment, for the hints scripts print:
+# `make aws-down-dev`, or `-prod` for the unsuffixed original.
+MAKE_ENV="${ENVIRONMENT_NAME:-prod}"
 HELD_BY_PARAM="$ENV_PARAM_PREFIX/held-by"
 SERVICES=(account-service catalog-service reservation-service payment-service notification-service)
 

@@ -273,25 +273,73 @@ aws-check: ## Verify AWS tooling and credentials before spending anything
 aws-bootstrap: ## Once per account: budgets, secrets, VPC, ECR, CloudFront (all free)
 	@NOTIFY_EMAIL="$(NOTIFY_EMAIL)" $(AWS_SCRIPTS)/aws-bootstrap.sh
 
-.PHONY: aws-up
-aws-up: ## Bring up the cluster and database (~20 min). TTL_HOURS=4 by default
-	@TTL_HOURS="$(or $(TTL_HOURS),4)" TAG="$(TAG)" RESTORE="$(or $(RESTORE),1)" $(AWS_SCRIPTS)/aws-up.sh
+# ------------------------------------------------------ dev and prod targets
+# ONE COMMAND PER ENVIRONMENT, so nobody has to remember six exports. dev and
+# prod share an account, the VPC, ECR and the RDS instance, and differ in
+# everything below. Without these, a bare `make aws-down` silently acted on
+# prod (the unsuffixed defaults) - which is how "dev" meant prod for a week.
+AWS_DEV  := ACCOUNT_STACK=rentez-persistent ENVIRONMENT_STACK=rentez-environment-dev \
+            ENVIRONMENT_NAME=dev CLUSTER_NAME=rentez-dev NAMESPACE=rentez-dev DB_NAME=rentez_dev
+AWS_PROD := ACCOUNT_STACK=rentez-persistent ENVIRONMENT_STACK=rentez-persistent \
+            ENVIRONMENT_NAME= CLUSTER_NAME=rentez NAMESPACE=rentez DB_NAME=rentez
 
-.PHONY: aws-deploy
-aws-deploy: ## Deploy the app to an already-running environment (~3 min, no infra)
+# The CI role needs an EKS access entry on every new cluster, or every deploy
+# fails with "Unauthorized". Looked up lazily, so only aws-up-* pays for it.
+CI_ROLE_ARN ?= $(shell aws iam get-role --role-name rentez-ci-deploy --query Role.Arn --output text 2>/dev/null)
+
+AWS_UP   = TTL_HOURS="$(or $(TTL_HOURS),4)" TAG="$(TAG)" RESTORE="$(or $(RESTORE),1)" CI_ROLE_ARN="$(CI_ROLE_ARN)" $(AWS_SCRIPTS)/aws-up.sh
+AWS_DOWN = KEEP_DB="$(KEEP_DB)" SKIP_BACKUP="$(SKIP_BACKUP)" $(AWS_SCRIPTS)/aws-down.sh
+
+.PHONY: aws-up-dev aws-up-prod aws-down-dev aws-down-prod
+aws-up-dev: ## DEV: bring up rentez-dev (~20 min). TTL_HOURS=4, TAG=<sha> optional
+	@$(AWS_DEV) $(AWS_UP)
+aws-up-prod: ## PROD: bring up rentez (~20 min). TTL_HOURS=4, TAG=<sha> optional
+	@$(AWS_PROD) $(AWS_UP)
+aws-down-dev: ## DEV: dump to S3, then tear down rentez-dev
+	@$(AWS_DEV) $(AWS_DOWN)
+aws-down-prod: ## PROD: dump to S3, then tear down rentez
+	@$(AWS_PROD) $(AWS_DOWN)
+
+.PHONY: aws-status-dev aws-status-prod aws-extend-dev aws-extend-prod aws-deploy-dev aws-deploy-prod
+aws-status-dev: ## DEV: what is running, the burn rate, when the lease expires
+	@$(AWS_DEV) $(AWS_SCRIPTS)/aws-status.sh
+aws-status-prod: ## PROD: what is running, the burn rate, when the lease expires
+	@$(AWS_PROD) $(AWS_SCRIPTS)/aws-status.sh
+aws-extend-dev: ## DEV: push the lease out (HOURS=4)
+	@$(AWS_DEV) HOURS="$(or $(HOURS),4)" $(AWS_SCRIPTS)/aws-extend.sh
+aws-extend-prod: ## PROD: push the lease out (HOURS=4)
+	@$(AWS_PROD) HOURS="$(or $(HOURS),4)" $(AWS_SCRIPTS)/aws-extend.sh
+aws-deploy-dev: ## DEV: deploy TAG=<sha> to a running rentez-dev (~3 min)
+	@$(AWS_DEV) TAG="$(TAG)" $(AWS_SCRIPTS)/aws-deploy.sh
+aws-deploy-prod: ## PROD: deploy TAG=<sha> to a running rentez (~3 min)
+	@$(AWS_PROD) TAG="$(TAG)" $(AWS_SCRIPTS)/aws-deploy.sh
+
+# The bare targets remain for CI and for anyone setting the variables by hand,
+# but refuse to guess. With CLUSTER_NAME unset they would fall back to prod's
+# names, which is never what someone typing `make aws-down` for dev meant.
+define require_env
+	@if [ "$(origin CLUSTER_NAME)" = "undefined" ]; then \
+	  printf "\n  Which environment?  make $(1)-dev   or   make $(1)-prod\n"; \
+	  printf "  (or set CLUSTER_NAME and the other environment variables yourself)\n\n"; \
+	  exit 1; \
+	fi
+endef
+
+.PHONY: aws-up aws-deploy aws-status aws-extend aws-down
+aws-up: ## (use aws-up-dev / aws-up-prod)
+	$(call require_env,aws-up)
+	@$(AWS_UP)
+aws-deploy: ## (CI) deploy with the environment's variables already set
 	@TAG="$(TAG)" $(AWS_SCRIPTS)/aws-deploy.sh
-
-.PHONY: aws-status
-aws-status: ## What is running, the burn rate, and when the lease expires
+aws-status: ## (use aws-status-dev / aws-status-prod)
+	$(call require_env,aws-status)
 	@$(AWS_SCRIPTS)/aws-status.sh
-
-.PHONY: aws-extend
-aws-extend: ## Push the lease out without redeploying (make aws-extend HOURS=8)
+aws-extend: ## (use aws-extend-dev / aws-extend-prod)
+	$(call require_env,aws-extend)
 	@HOURS="$(or $(HOURS),4)" $(AWS_SCRIPTS)/aws-extend.sh
-
-.PHONY: aws-down
-aws-down: ## Dump to S3, then destroy everything billed by the hour
-	@KEEP_DB="$(KEEP_DB)" SKIP_BACKUP="$(SKIP_BACKUP)" $(AWS_SCRIPTS)/aws-down.sh
+aws-down: ## (use aws-down-dev / aws-down-prod)
+	$(call require_env,aws-down)
+	@$(AWS_DOWN)
 
 .PHONY: aws-images
 aws-images: ## Build and push all five service images to ECR

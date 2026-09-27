@@ -115,18 +115,21 @@ Confirm the budget confirmation email when it arrives, or the alarms are inert.
 ## Every day
 
 ```bash
-make aws-up          # ~20 min, 4-hour lease
-make aws-status      # what is running, burn rate, time left
-make aws-down        # dump to S3, then destroy everything hourly-billed
+make aws-up-dev      # ~20 min, 4-hour lease   (aws-up-prod for rentez)
+make aws-status-dev  # what is running, burn rate, time left
+make aws-down-dev    # dump to S3, then destroy everything hourly-billed
 ```
+
+The bare `make aws-up` / `make aws-down` refuse to run without the environment's
+variables and point at the `-dev` / `-prod` targets.
 
 Useful variants:
 
 ```bash
-make aws-up TTL_HOURS=8      # longer lease for a demo day
-make aws-up TAG=abc1234      # deploy a specific image
-make aws-up RESTORE=0        # start from an empty database
-make aws-down KEEP_DB=1      # keep RDS running (~$13/month) for tomorrow
+make aws-up-dev TTL_HOURS=8  # longer lease for a demo day
+make aws-up-dev TAG=abc1234  # deploy a specific image
+make aws-up-dev RESTORE=0    # start from an empty database
+make aws-down-dev KEEP_DB=1  # keep RDS running (~$13/month) for tomorrow
 ```
 
 ### Redeploying without rebuilding the environment
@@ -267,11 +270,7 @@ is nothing to leak.
    Bring each cluster up with the same names it is configured with:
 
    ```bash
-   CLUSTER_NAME=rentez-dev NAMESPACE=rentez-dev \
-     ENVIRONMENT_STACK=rentez-environment-dev ENVIRONMENT_NAME=dev \
-     DB_NAME=rentez_dev \
-     CI_ROLE_ARN=arn:aws:iam::<account>:role/rentez-ci-deploy \
-     make aws-up
+   make aws-up-dev
    ```
 
 4. **Give the role access to the cluster.** IAM permission is not cluster
@@ -280,13 +279,9 @@ is nothing to leak.
    when told the role ARN, and must be told every time, because the cluster is
    ephemeral:
 
-   ```bash
-   export CI_ROLE_ARN=arn:aws:iam::<account>:role/rentez-ci-deploy
-   make aws-up
-   ```
-
-   Put that `export` in the shared account's shell profile and forget about it.
-   Skip it and deploys fail with `You must be logged in to the server
+   `make aws-up-dev` and `make aws-up-prod` look up `rentez-ci-deploy` and pass
+   it themselves; pass `CI_ROLE_ARN=...` to override. Called some other way
+   without it, deploys fail with `You must be logged in to the server
    (Unauthorized)`, which mentions neither IAM nor the missing access entry.
 
 ### A red Deploy run is often correct
