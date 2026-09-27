@@ -25,7 +25,6 @@ ACCOUNT_STACK="${ACCOUNT_STACK:-rentez-account}"
 # bootstrapped before the split" in aws/README.md.
 LEGACY_STACK="${LEGACY_STACK:-rentez-persistent}"
 ENVIRONMENT_STACK="${ENVIRONMENT_STACK:-rentez-environment}"
-DATABASE_STACK="${DATABASE_STACK:-rentez-database}"
 GUARDRAILS_STACK="${GUARDRAILS_STACK:-rentez-guardrails}"
 NAMESPACE="${NAMESPACE:-rentez}"
 
@@ -40,6 +39,15 @@ DB_NAME="${DB_NAME:-rentez}"
 # than rebuilt.
 ENVIRONMENT_NAME="${ENVIRONMENT_NAME:-}"
 
+# This environment's database stack, and so its own RDS instance. Derived from
+# ENVIRONMENT_NAME like everything below, so CI needs no DATABASE_STACK variable:
+# an empty one falls through to this. The original keeps rentez-database.
+if [ -n "$ENVIRONMENT_NAME" ]; then
+	DATABASE_STACK="${DATABASE_STACK:-rentez-database-$ENVIRONMENT_NAME}"
+else
+	DATABASE_STACK="${DATABASE_STACK:-rentez-database}"
+fi
+
 # This environment's lease and holder, by the same rule 15-environment.yaml
 # uses to name ExpiresAtParam. These were hardcoded to /rentez/env/..., so with
 # two environments `make aws-up` for dev armed PROD's timer (dev's reaper, which
@@ -51,6 +59,16 @@ else
 	ENV_PARAM_PREFIX="/rentez/env"
 fi
 EXPIRES_PARAM="$ENV_PARAM_PREFIX/expires-at"
+# This environment's CloudWatch log group. Each cluster runs its own Fluent Bit,
+# but every one wrote to /rentez/cluster, so dev and prod logs were interleaved
+# in one group - and filtering by service name matched both. The original keeps
+# its name, so existing logs and bookmarks still work.
+if [ -n "$ENVIRONMENT_NAME" ]; then
+	LOG_GROUP="/rentez/$ENVIRONMENT_NAME/cluster"
+else
+	LOG_GROUP="/rentez/cluster"
+fi
+
 # The make-target suffix for this environment, for the hints scripts print:
 # `make aws-down-dev`, or `-prod` for the unsuffixed original.
 MAKE_ENV="${ENVIRONMENT_NAME:-prod}"
@@ -59,7 +77,7 @@ SERVICES=(account-service catalog-service reservation-service payment-service no
 
 # Pod image used for every one-off database task. Chosen so that no custom image
 # has to be built and pushed before the first teardown can take a backup.
-DB_TOOLS_IMAGE="postgres:16-alpine"
+DB_TOOLS_IMAGE="postgres:17-alpine"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 

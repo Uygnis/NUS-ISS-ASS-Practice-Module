@@ -16,7 +16,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 # verified beats two that are each half-trusted. It is also cheaper (a
 # compressed dump of coursework data is a few megabytes, against ~$0.095/GB-month
 # for every retained snapshot) and more portable, since a plain SQL dump restores
-# into any Postgres 16 while a snapshot only restores into RDS.
+# into any Postgres 17 or later while a snapshot only restores into RDS.
 #
 # The reaper Lambda deletes this stack too, as its last step - see
 # 10-persistent.yaml. If the reaper fires, it means nobody ran `make aws-down`,
@@ -24,11 +24,21 @@ AWSTemplateFormatVersion: "2010-09-09"
 # forgetting, and it is a much smaller cost than a month of EKS.
 
 Description: >
-  RentEZ ephemeral layer: one db.t4g.micro PostgreSQL 16 instance in the
+  RentEZ ephemeral layer: one db.t4g.micro PostgreSQL 17 instance in the
   persistent VPC's private subnets. Roughly $0.018/hr. Destroyed by
   `make aws-down`.
 
 Parameters:
+  EnvironmentName:
+    Type: String
+    Default: ""
+    Description: >
+      Empty for the original environment, which keeps the names rentez-postgres,
+      rentez-db-endpoint and rentez-db-port unchanged. Otherwise a suffix
+      ("dev") so each environment gets its OWN instance: dev and prod used to
+      share one, separated only by database name, which put both environments'
+      connections against one ~112-connection ceiling and let either teardown
+      delete the other's data.
   DbInstanceClass:
     Type: String
     Default: db.t4g.micro
@@ -58,6 +68,9 @@ Parameters:
       gp3 storage is billed whether or not the instance is running, which is one
       more reason `make aws-down` destroys rather than stops.
 
+Conditions:
+  IsDefaultEnvironment: !Equals [!Ref EnvironmentName, ""]
+
 Resources:
 
   Database:
@@ -66,9 +79,15 @@ Resources:
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
     Properties:
-      DBInstanceIdentifier: rentez-postgres
+      DBInstanceIdentifier: !If [IsDefaultEnvironment, rentez-postgres, !Sub "rentez-postgres-${EnvironmentName}"]
       Engine: postgres
-      EngineVersion: "16"
+      # Major only: RDS picks the default minor (17.9 in ap-southeast-1 as of
+      # 2026-09-27; 17.5-17.11 orderable on db.t4g.micro) and
+      # AutoMinorVersionUpgrade keeps it current. cfn-lint's W3691 flags any
+      # bare major as "deprecated"; RDS itself accepts it. Must match Family in
+      # the account stack's DbParameterGroup (postgres17), and DB_TOOLS_IMAGE in
+      # lib.sh must be at least this major for pg_dump.
+      EngineVersion: "17"
       DBInstanceClass: !Ref DbInstanceClass
 
       # ONE database holding five schemas - see db/init/01-schemas.sql. The
@@ -116,12 +135,13 @@ Resources:
         - { Key: Project, Value: rentez }
         - { Key: Layer, Value: ephemeral }
         - { Key: Owner, Value: !Ref Owner }
+        - { Key: Environment, Value: !If [IsDefaultEnvironment, prod, !Ref EnvironmentName] }
 
 Outputs:
   DbEndpoint:
     Description: Hostname the services connect to. Becomes DB_HOST in the Helm values.
     Value: !GetAtt Database.Endpoint.Address
-    Export: { Name: rentez-db-endpoint }
+    Export: { Name: !If [IsDefaultEnvironment, rentez-db-endpoint, !Sub "rentez-db-endpoint-${EnvironmentName}"] }
   DbPort:
     Value: !GetAtt Database.Endpoint.Port
-    Export: { Name: rentez-db-port }
+    Export: { Name: !If [IsDefaultEnvironment, rentez-db-port, !Sub "rentez-db-port-${EnvironmentName}"] }

@@ -161,7 +161,7 @@ tearing down the one you were working in leaves the other running.
 Reading logs does not need a cluster shell:
 
 ```bash
-aws logs tail /rentez/cluster --follow --filter-pattern reservation-service
+make aws-logs-dev S=reservation-service     # or aws-logs-prod; SINCE=2h FOLLOW=0
 ```
 
 They are kept for 7 days. `kubectl logs` only reaches a pod that is still
@@ -304,17 +304,20 @@ the security groups and the five ECR repositories — none of which benefit from
 duplication, and the shared VPC is what lets a second cluster cost no second
 NAT gateway.
 
-The database is shared at the *instance* level and separate at the *database*
-level: `DB_NAME` gives each environment its own database inside the one RDS
-instance, with the five per-service schemas created in each by `make aws-up`. A
-second instance would be a second hourly bill for isolation the database
-already provides.
+**Each environment has its own RDS instance**, from its own database stack:
+`rentez-database` / `rentez-postgres` for prod (the original names, unchanged)
+and `rentez-database-dev` / `rentez-postgres-dev` for dev. `lib.sh` derives the
+stack from `ENVIRONMENT_NAME`, so no extra variable is needed anywhere. Inside
+each instance, `make aws-up` creates the environment's `DB_NAME` and the five
+per-service schemas.
 
-Because the instance is shared, **only the last environment standing deletes
-it.** `make aws-down` and each environment's reaper keep the database stack
-while any other `rentez*` cluster exists, and say so; this environment's data is
-already safe in its own backup bucket by then. Before this, taking dev down
-deleted prod's database with it.
+They used to share one instance, separated only by database name, to save a
+second hourly bill (~$0.018/hr per `db.t4g.micro`). That cost more than it
+saved: both environments' connections counted against one ~112-connection
+ceiling (150 wanted at full scale-out), and a teardown had to check whether
+another environment was still up before it could delete anything. With one
+instance each, `make aws-down-dev` and dev's reaper delete dev's instance and
+nothing else.
 
 Each environment also has its own lease: `/rentez/env/<name>/expires-at` and
 `/rentez/env/<name>/held-by`, or `/rentez/env/...` for the unsuffixed original,
@@ -353,7 +356,7 @@ of clusters. Do not add one back per cluster.
 | An API call returns `200` with `index.html` in the body | That path has no ALB rule, so CloudFront fell through to the SPA. Check the service's `ingress.enabled` in `deploy/helm/values/`. |
 | `make aws-status` says "not bootstrapped" while things are running | Fixed — update your checkout. It read the post-split stack names against a pre-split account. |
 
-Two more places to look before guessing: `aws logs tail /rentez/cluster` for
+Two more places to look before guessing: `make aws-logs-dev` (or `-prod`) for
 what the services said, and `./scripts/smoke.sh` against the environment URL for
 whether the booking flow works end to end. The smoke test is safe to run
 repeatedly against a deployed environment — it picks its car from the

@@ -143,16 +143,10 @@ fi
 
 # ---------------------------------------------------------------- 4. database
 step "4/5  Database"
-# THE INSTANCE IS SHARED. Every environment keeps its own database inside the
-# one rentez-postgres instance, so deleting the stack here used to take down
-# every OTHER environment's database with it - `make aws-down` for dev deleted
-# prod. Only the last environment standing deletes it. This environment's own
-# data is already safe in its dump from step 1.
-OTHER_CLUSTERS="$(aws eks list-clusters --query 'clusters' --output text 2>/dev/null \
-	| tr '\t' '\n' | grep '^rentez' | grep -vx "$CLUSTER_NAME" | tr '\n' ' ' || true)"
-if [ -n "$OTHER_CLUSTERS" ]; then
-	ok "keeping the shared database — still in use by: $OTHER_CLUSTERS"
-elif [ "$KEEP_DB" = "1" ]; then
+# This environment's OWN instance (DATABASE_STACK from lib.sh). Environments
+# used to share one, and this step then had to spare it while any other
+# cluster was up; with one instance each, it simply goes.
+if [ "$KEEP_DB" = "1" ]; then
 	warn "KEEP_DB=1 — leaving RDS running at about \$0.018/hour (~\$13/month)"
 	warn "it is now UNREACHABLE until the next 'make aws-up', because nothing else is in the VPC"
 elif stack_exists "$DATABASE_STACK"; then

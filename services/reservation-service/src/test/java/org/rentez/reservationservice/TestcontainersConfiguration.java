@@ -6,7 +6,7 @@ import org.springframework.context.annotation.Bean;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
- * Backs every {@code @SpringBootTest} with a real PostgreSQL 16 container.
+ * Backs every {@code @SpringBootTest} with a real PostgreSQL 17 container.
  *
  * <p>This is not optional scaffolding. The service declares a datasource, so
  * Hibernate opens a JDBC connection during startup purely to resolve the SQL
@@ -38,7 +38,7 @@ class TestcontainersConfiguration {
 	@Bean
 	@ServiceConnection
 	PostgreSQLContainer postgresContainer() {
-		return new PostgreSQLContainer("postgres:16-alpine");
+		return new PostgreSQLContainer("postgres:17-alpine");
 	}
 
 }

@@ -81,7 +81,7 @@ services:
   # No profile — these start with a bare `docker compose up`.
 
   postgres:
-    image: postgres:16-alpine
+    image: postgres:17-alpine
     # 200 is deliberately MORE than RDS db.t4g.micro's ~112, so the local stack
     # survives what RDS will not. That gap is a known hazard, not an oversight:
     # a pool misconfiguration cannot reproduce locally and surfaces for the first

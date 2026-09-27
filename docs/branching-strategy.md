@@ -84,8 +84,8 @@ CloudFormation stack and database the run deploys to:
 | `main` | `prod.yml` | `prod` | `rentez-prod` | `rentez-prod` | `rentez_prod` |
 
 Both live in the **same AWS account** and share the VPC, the security groups,
-the five ECR repositories and the RDS *instance*. What each gets of its own is a
-cluster, a database inside that instance, a frontend bucket, a CloudFront
+and the five ECR repositories. What each gets of its own is a cluster, **an RDS
+instance**, a frontend bucket, a CloudFront
 distribution and therefore **its own URL** — so a demo off `main` is not
 disturbed by a merge to `dev`.
 

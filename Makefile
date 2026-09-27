@@ -314,6 +314,16 @@ aws-deploy-dev: ## DEV: deploy TAG=<sha> to a running rentez-dev (~3 min)
 aws-deploy-prod: ## PROD: deploy TAG=<sha> to a running rentez (~3 min)
 	@$(AWS_PROD) TAG="$(TAG)" $(AWS_SCRIPTS)/aws-deploy.sh
 
+# Logs outlive the cluster: CloudWatch keeps them LOG_RETENTION_DAYS (7) after
+# teardown. S=<service> narrows to one service; FOLLOW=0 prints and exits.
+AWS_LOGS = bash -c 'source aws/scripts/lib.sh; aws logs tail "$$LOG_GROUP" --since "$${SINCE:-1h}" $${S:+--filter-pattern "$$S"} $$([ "$${FOLLOW:-1}" = 1 ] && echo --follow)'
+
+.PHONY: aws-logs-dev aws-logs-prod
+aws-logs-dev: ## DEV: tail CloudWatch logs (S=reservation-service SINCE=1h FOLLOW=0)
+	@$(AWS_DEV) S="$(S)" SINCE="$(SINCE)" FOLLOW="$(FOLLOW)" $(AWS_LOGS)
+aws-logs-prod: ## PROD: tail CloudWatch logs (S=reservation-service SINCE=1h FOLLOW=0)
+	@$(AWS_PROD) S="$(S)" SINCE="$(SINCE)" FOLLOW="$(FOLLOW)" $(AWS_LOGS)
+
 # The bare targets remain for CI and for anyone setting the variables by hand,
 # but refuse to guess. With CLUSTER_NAME unset they would fall back to prod's
 # names, which is never what someone typing `make aws-down` for dev meant.

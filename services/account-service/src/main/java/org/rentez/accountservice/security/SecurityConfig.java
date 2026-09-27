@@ -1,5 +1,6 @@
 package org.rentez.accountservice.security;
 
+import jakarta.servlet.DispatcherType;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -78,6 +79,11 @@ public class SecurityConfig {
 				.csrf(csrf -> csrf.disable())
 				.sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
 				.authorizeHttpRequests(auth -> auth
+						// Spring re-dispatches an unhandled exception to /error. Without this,
+						// that dispatch is itself an anonymous request to a protected path, so
+						// every failure on a public endpoint surfaced as 401 - about 11,000 of
+						// them in the AWS stress test, hiding the real 5xx.
+						.dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
 						.requestMatchers("/api/accounts/auth/**","/swagger-ui/**","/swagger-ui.html","/v3/api-docs/**").permitAll()
 						.requestMatchers("/actuator/health/**", "/actuator/info").permitAll()
 						// Second half of the /internal control. The gateway already
