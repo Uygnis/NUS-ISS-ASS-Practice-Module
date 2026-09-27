@@ -104,11 +104,11 @@ jobs:
 
       - name: SonarCloud analysis
         if: success()
-        working-directory: services/${{ matrix.service }}
+        working-directory: services/account-service
         run: >
           ./mvnw
           org.sonarsource.scanner.maven:sonar-maven-plugin:sonar
-          -Dsonar.projectKey=${{ matrix.service }}
+          -Dsonar.projectKey=services/account-service
           -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION }}
           -Dsonar.host.url=https://sonarcloud.io
           -Dsonar.token=${{ secrets.SONAR_TOKEN }}
