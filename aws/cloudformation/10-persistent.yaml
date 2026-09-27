@@ -648,12 +648,61 @@ Resources:
                   - elasticloadbalancing:DescribeTags
                   - elasticloadbalancing:DeleteLoadBalancer
                 Resource: "*"
+              # GetParameters (plural) is what CloudFormation calls to resolve
+              # {{resolve:ssm-secure:/rentez/db/master-password}} in the
+              # database stack - using THIS role, on delete as well as create.
+              # Without it the delete failed with AccessDenied, and the instance
+              # billed for five days after its lease expired (2026-09-22).
               - Effect: Allow
-                Action: [ssm:GetParameter, ssm:PutParameter]
+                Action: [ssm:GetParameter, ssm:GetParameters, ssm:PutParameter]
                 Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/rentez/*"
               - Effect: Allow
-                Action: [cloudformation:DescribeStacks, cloudformation:DeleteStack]
-                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/rentez-database/*"
+                Action: cloudformation:ListStacks
+                Resource: "*"
+              # The database stack, and the stacks eksctl creates for the
+              # cluster. eksctl turns termination protection on for its own
+              # stacks, so deleting them needs UpdateTerminationProtection too.
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DeleteStack
+                  - cloudformation:UpdateTerminationProtection
+                Resource:
+                  - !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/rentez-database/*"
+                  # Three exact shapes, not eksctl-${ClusterName}-*: that would
+                  # also match eksctl-rentez-dev-* when ClusterName is rentez,
+                  # letting one environment's reaper delete another's cluster.
+                  - !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/eksctl-${ClusterName}-cluster/*"
+                  - !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/eksctl-${ClusterName}-nodegroup-*/*"
+                  - !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/eksctl-${ClusterName}-addon-*/*"
+              # What CloudFormation deletes on the reaper's behalf when it
+              # removes the eksctl stacks: the IAM roles for the cluster, nodes
+              # and service accounts, their security groups and launch template.
+              # ONLY via CloudFormation (aws:CalledVia) - the reaper itself can
+              # never delete a role or security group directly.
+              - Effect: Allow
+                Action:
+                  - iam:GetRole
+                  - iam:DeleteRole
+                  - iam:DeleteRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListRolePolicies
+                  - iam:ListInstanceProfilesForRole
+                  - iam:RemoveRoleFromInstanceProfile
+                  - iam:DeleteInstanceProfile
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DeleteSecurityGroup
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupEgress
+                  - ec2:DescribeLaunchTemplates
+                  - ec2:DeleteLaunchTemplate
+                  - eks:DescribeAddon
+                  - eks:DeleteAddon
+                Resource: "*"
+                Condition:
+                  ForAnyValue:StringEquals:
+                    aws:CalledVia: cloudformation.amazonaws.com
               # DeleteStack on an RDS stack needs permission to delete the
               # instance itself, and to take the final snapshot on the way out.
               - Effect: Allow
@@ -731,6 +780,27 @@ Resources:
               return found
 
 
+          def is_eksctl_stack(name):
+              """eksctl's own stacks for THIS cluster, by their exact shapes.
+
+              Not startswith(f"eksctl-{CLUSTER}-"): for CLUSTER=rentez that also
+              matches eksctl-rentez-dev-cluster, another environment's cluster.
+              """
+              return (name == f"eksctl-{CLUSTER}-cluster"
+                      or name.startswith(f"eksctl-{CLUSTER}-nodegroup-")
+                      or name.startswith(f"eksctl-{CLUSTER}-addon-"))
+
+
+          def eksctl_stacks():
+              """Live CloudFormation stacks eksctl created for this cluster."""
+              found = []
+              for page in cfn.get_paginator("list_stacks").paginate():
+                  for s in page["StackSummaries"]:
+                      if is_eksctl_stack(s["StackName"]) and s["StackStatus"] != "DELETE_COMPLETE":
+                          found.append(s)
+              return found
+
+
           def handler(event, context):
               is_expired, raw = expired()
               if not is_expired:
@@ -766,15 +836,41 @@ Resources:
                       return {"action": "deleting-cluster", "cluster": CLUSTER}
                   return {"action": "waiting-on-cluster", "cluster": CLUSTER}
 
-              # --- step 4: the database stack ---------------------------------
+              # --- step 4: the stacks eksctl made for the cluster --------------
+              # Deleting the cluster through the EKS API leaves eksctl's own
+              # stacks behind, termination-protected. They cost nothing, but
+              # `eksctl create cluster` refuses to run while they exist, so the
+              # next `make aws-up` failed until someone deleted all eight by
+              # hand. Dependents first, the cluster stack last.
+              stacks = eksctl_stacks()
+              if stacks:
+                  busy = [s for s in stacks if s["StackStatus"] == "DELETE_IN_PROGRESS"]
+                  if busy:
+                      return {"action": "waiting-on-eksctl-stack", "stack": busy[0]["StackName"]}
+                  # The cluster stack sorts last, so it is only chosen once
+                  # every nodegroup and addon stack is gone.
+                  cluster_stack = f"eksctl-{CLUSTER}-cluster"
+                  target = sorted(
+                      (s["StackName"] for s in stacks), key=lambda n: n == cluster_stack
+                  )[0]
+                  cfn.update_termination_protection(
+                      EnableTerminationProtection=False, StackName=target
+                  )
+                  cfn.delete_stack(StackName=target)
+                  return {"action": "deleting-eksctl-stack", "stack": target}
+
+              # --- step 5: the database stack ---------------------------------
               # Last, so that a dump taken by `make aws-down` is never racing a
               # half-deleted cluster. Reaching here means the cluster is gone.
               try:
                   status = cfn.describe_stacks(StackName=DB_STACK)["Stacks"][0]["StackStatus"]
-                  if not status.startswith("DELETE"):
-                      cfn.delete_stack(StackName=DB_STACK)
-                      return {"action": "deleting-database-stack", "stack": DB_STACK}
-                  return {"action": "waiting-on-database-stack", "status": status}
+                  # DELETE_FAILED is retried, not waited on. It used to match
+                  # startswith("DELETE") and be reported as "waiting" on every
+                  # tick, forever, while the instance kept billing.
+                  if status == "DELETE_IN_PROGRESS":
+                      return {"action": "waiting-on-database-stack", "status": status}
+                  cfn.delete_stack(StackName=DB_STACK)
+                  return {"action": "deleting-database-stack", "stack": DB_STACK, "was": status}
               except ClientError as exc:
                   if "does not exist" not in str(exc):
                       raise
