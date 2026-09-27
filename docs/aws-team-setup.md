@@ -161,7 +161,7 @@ tearing down the one you were working in leaves the other running.
 Reading logs does not need a cluster shell:
 
 ```bash
-aws logs tail /rentez/cluster --follow --filter-pattern reservation-service
+make aws-logs-dev S=reservation-service     # or aws-logs-prod; SINCE=2h FOLLOW=0
 ```
 
 They are kept for 7 days. `kubectl logs` only reaches a pod that is still
@@ -353,7 +353,7 @@ of clusters. Do not add one back per cluster.
 | An API call returns `200` with `index.html` in the body | That path has no ALB rule, so CloudFront fell through to the SPA. Check the service's `ingress.enabled` in `deploy/helm/values/`. |
 | `make aws-status` says "not bootstrapped" while things are running | Fixed — update your checkout. It read the post-split stack names against a pre-split account. |
 
-Two more places to look before guessing: `aws logs tail /rentez/cluster` for
+Two more places to look before guessing: `make aws-logs-dev` (or `-prod`) for
 what the services said, and `./scripts/smoke.sh` against the environment URL for
 whether the booking flow works end to end. The smoke test is safe to run
 repeatedly against a deployed environment — it picks its car from the

@@ -39,7 +39,7 @@ flowchart TB
         SQS[/SQS booking-events<br/>+ DLQ/]
         SSM[SSM Parameter Store<br/>JWT + DB passwords]
         ECR[(ECR<br/>rentez-service images)]
-        CW[(CloudWatch Logs<br/>/rentez/cluster · 7 days)]
+        CW[(CloudWatch Logs<br/>one group per environment · 7 days)]
     end
 
     User -->|HTTPS| CF
@@ -60,7 +60,7 @@ flowchart TB
 | Service | Public path | DB role | Replicas (HPA) |
 |---|---|---|---|
 | account-service | `/api/accounts` | `auth_user` | 2–4 |
-| catalog-service | `/api/catalog` | `fleet_user` | 2–6 |
+| catalog-service | `/api/catalog` | `fleet_user` | 3–6 |
 | reservation-service | `/api/reservations` | `booking_user` | 2–10 |
 | payment-service | `/api/payments` | `payment_user` | 2–4 |
 | notification-service | `/api/notifications` | `notification_user` | 1 (no HPA) |
@@ -127,13 +127,20 @@ failed were routinely gone before anyone looked at them.
 `make aws-up` installs **Fluent Bit** (`eks/aws-for-fluent-bit`, not `fluent/` —
 only the AWS build carries the CloudWatch output plugin) with an IRSA service
 account scoped to `/rentez/*` and nothing else. Every container's stdout lands
-in one log group:
+in **one log group per environment** — `/rentez/cluster` for prod and
+`/rentez/dev/cluster` for dev, derived from `ENVIRONMENT_NAME` in `lib.sh`:
 
 ```bash
-aws logs tail /rentez/cluster --follow --filter-pattern account-service
+make aws-logs-dev S=account-service            # follows; SINCE=1h FOLLOW=0 to print and exit
+make aws-logs-prod S=account-service
 ```
 
-One group, not one per service: `cloudwatch_logs` has a `log_group_template`,
+Each cluster always ran its own Fluent Bit, but every one wrote to
+`/rentez/cluster`, so dev and prod lines were interleaved and a filter on a
+service name matched both. Prod keeps the old name, so its existing logs and
+bookmarks still work.
+
+One group per environment, not one per service: `cloudwatch_logs` has a `log_group_template`,
 but its record accessor rejects a literal prefix before an accessor. The stream
 name carries the pod, namespace and container, so filtering does the same job.
 

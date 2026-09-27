@@ -35,7 +35,7 @@ contention — so it is not counted as a failure.
 
 | Layer | Mechanism | Bounds | Trigger |
 |---|---|---|---|
-| Pods | HPA per service ([`hpa.yaml`](../deploy/helm/rentez-service/templates/hpa.yaml)) | catalog 2–6, reservation 2–10, account 2–4, payment 2–4 | CPU > 60% of the 200m request; scale-up window 0s, scale-down 300s |
+| Pods | HPA per service ([`hpa.yaml`](../deploy/helm/rentez-service/templates/hpa.yaml)) | catalog 3–6, reservation 2–10, account 2–4, payment 2–4 | CPU > 60% of the 200m request; scale-up window 0s, scale-down 300s |
 | Nodes | Cluster Autoscaler ([`cluster.yaml`](../aws/eksctl/cluster.yaml)) | 2–5 spot nodes (2 vCPU each) | Pods `Pending` for lack of CPU |
 
 Ten baseline pods at 200m fit on two nodes. At the HPA maximums (26 pods, 5.2
@@ -165,6 +165,18 @@ until the system was under concurrent load.
    `hikari.connection-timeout=2000` and `spring.http.clients.{connect,read}-timeout`
    in all five services. Overload now produces fast 503s and recovers.
 
+4. **Errors surfaced as 401.** Spring re-dispatches an unhandled exception to
+   `/error`; Spring Security treated that as an anonymous request to a
+   protected path, so every failure on a public endpoint returned 401 - 27
+   times locally at 300/s, ~2,500 in the first AWS stress test and ~11,000 in
+   the dev one, hiding nearly all the real errors. *Fix:*
+   `dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()` in all five
+   `SecurityConfig`s. Verified by stopping Postgres locally: the car list now
+   returns 500 and availability 503.
+5. **The same audit deadlock in account and catalog.** Not on the hot path
+   yet, but carrying the pattern from 1. *Fix:* the same - the audit joins the
+   caller's transaction; every caller audits only on success.
+
 **Why this matters for scalability:** before these fixes, the CPU-based HPA could
 never have helped. The services were blocked, not busy, so more load produced
 more timeouts and no CPU for the HPA to see.
@@ -210,26 +222,53 @@ cluster's.
 **The remaining ~1% of errors** fell at peak load after scaling had finished,
 with reservation and catalog both at their HPA maximums (10 and 6) and catalog
 still at ~150% of its CPU request - the ceiling the HPA bounds allow, not a
-failure to scale. ~96% of them were the masked 401s described below.
+failure to scale. ~96% of them were masked 401s (see "Errors surfaced as 401"
+below - now fixed).
+
+### On AWS dev, as a separate environment
+
+Rerun on 2026-09-27 against `rentez-dev` (`f9a8ebe`, all of the above merged),
+its own cluster, namespace and database, through its own CloudFront URL.
+
+| Test | Load | p95 | p99 | Errors | Result |
+|---|---|---|---|---|---|
+| smoke | end-to-end booking flow | — | — | 0 (33/33 checks) | PASS |
+| load | 50/s | 191 ms | 424 ms | 0% | PASS |
+| load | 100/s | **86 ms** | **216 ms** | **0%** | PASS |
+| stress | ramp to 300 users, ~249 req/s | 2.66 s | — | **4.86%** | PASS (limit 5%) |
+
+The load results match the morning's. The stress run did not, and it is the
+clearest evidence yet for the first known limit below:
+
+- Reservation scaled 2 → 10 within four minutes, as before. Nodes did not need
+  to: the cluster still had 4 from the load tests (the Cluster Autoscaler waits
+  ~10 minutes to remove one), so no pod was ever Pending.
+- **Catalog was the failure.** 10,885 of the 11,013 errors were on
+  `/api/catalog/cars`, between minutes 4 and 10. Catalog sat at **3–4 pods with
+  CPU at only 70–90%** of its request - over the 60% target, but not by enough
+  to scale quickly - while its 3-connection pools ran dry. It reached its
+  maximum of 6 at minute 11. With the 2 s fail-fast timeout that shows as
+  errors, not latency.
+
+![AWS dev stress: catalog pool-bound, scaling late](perf/aws-dev-stress-catalog.png)
+
+**Changed after this run:** catalog's `minReplicas` 2 → 3 (9 connections before
+the HPA has to react; the maximum and the RDS budget are unchanged), and the
+401 masking fixed so the next run reports the real status.
 
 ## Known limits (report these — they are findings, not failures)
 
-- **CPU is the wrong scaling signal for pool exhaustion.** The fixes make CPU
-  rise with load, so the HPA now has something to react to - but if a pool is
-  ever exhausted again, the pods sit idle while requests fail. Future work:
-  scale reservation on `hikaricp.connections.pending` (already exposed by
-  actuator) through KEDA or the Prometheus adapter.
-- **account-service and catalog-service still audit with `REQUIRES_NEW`.** They
-  were not on the hot path in this test, but they carry the same deadlock.
-- **Errors can surface as 401.** An exception forwarded to Spring's `/error`
-  page is blocked by Spring Security for anonymous callers, so a public
-  endpoint that fails returns 401 instead of its real status. Seen 27 times on
-  `/api/catalog/cars` at 300/s locally, and ~2,500 times in the AWS stress test,
-where it hid most of the real errors. Fix: permit `/error` in each
-`SecurityConfig`.
-- **Pool size versus RDS.** 3 connections per pod is what keeps 25 pods under
-  `db.t4g.micro`'s ~112 connections. Raising it needs RDS Proxy (or fewer max
-  replicas) - see [ch01](ch01.startup-project.adoc).
+- **CPU is the wrong scaling signal for pool exhaustion.** Demonstrated by
+  catalog in the AWS dev stress test: pools dry, CPU only 70-90%, scaling late.
+  Raising catalog's minimum to 3 buys headroom; the fix is to scale on
+  `hikaricp.connections.pending` (already exposed by actuator) through KEDA or
+  the Prometheus adapter.
+- **Pool size versus RDS - now shared by two environments.** 3 connections per
+  pod keeps one environment's 25 max pods at 75, under `db.t4g.micro`'s ~112.
+  Dev and prod share that instance, so **both at full scale-out would want
+  150** and exhaust it. Fine while only one runs at a time; running both under
+  load needs RDS Proxy, a larger instance class, or lower HPA maximums - see
+  [ch01](ch01.startup-project.adoc).
 - **notification-service does not autoscale.** It is a queue consumer; CPU
   stays low however deep the SQS backlog grows, so a CPU HPA would never fire.
   Future work: KEDA scaling on `ApproximateNumberOfMessagesVisible`.
