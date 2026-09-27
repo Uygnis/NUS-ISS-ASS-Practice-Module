@@ -106,6 +106,14 @@ jobs:
           pwd
           ls -la
           ls -la target/site/jacoco/
+
+      - name: Debug SonarCloud configuration
+        run: |
+          echo "Service: ${{ matrix.service }}"
+          echo "Project key: rentez-${{ matrix.service }}"
+          echo "Organization: ${{ secrets.SONAR_ORGANIZATION }}"
+          echo "SONAR_TOKEN is set: ${{ secrets.SONAR_TOKEN != '' }}"
+          pwd
       - name: SonarCloud analysis
         if: success()
         run: >
