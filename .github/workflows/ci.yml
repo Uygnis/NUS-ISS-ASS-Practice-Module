@@ -114,6 +114,24 @@ jobs:
           echo "Organization: ${{ secrets.SONAR_ORGANIZATION }}"
           echo "SONAR_TOKEN is set: ${{ secrets.SONAR_TOKEN != '' }}"
           pwd
+
+      - name: Check SonarCloud
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          echo "Project key: rentez-${{ matrix.service }}"
+          echo "Organization: ${{ secrets.SONAR_ORGANIZATION }}"
+
+          echo "=== Authentication ==="
+          curl -sS \
+            -u "${SONAR_TOKEN}:" \
+            https://sonarcloud.io/api/authentication/validate
+
+          echo
+          echo "=== Project ==="
+          curl -sS \
+            -u "${SONAR_TOKEN}:" \
+            "https://sonarcloud.io/api/projects/search?projects=rentez-${{ matrix.service }}"
       - name: SonarCloud analysis
         if: success()
         run: >
