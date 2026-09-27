@@ -144,6 +144,26 @@ make aws-up RESTORE=0           # start from an empty database
 make aws-down KEEP_DB=1         # keep RDS running (~$13/month) for tomorrow
 ```
 
+`make aws-status` reports on the stacks the account **actually has**, not the
+ones the current defaults name — an account bootstrapped before the stack split
+used to read as "not bootstrapped" while its cluster was up and billing. An
+`ACCOUNT_STACK` you set yourself is never quietly substituted, and the output
+names the stack whenever it is not the one the labels imply.
+
+`make aws-status` and `make aws-down` act on **one** environment — whichever
+`CLUSTER_NAME` and stack names are in your shell. With `dev` and `prod` both up,
+tearing down the one you were working in leaves the other running.
+
+Reading logs does not need a cluster shell:
+
+```bash
+aws logs tail /rentez/cluster --follow --filter-pattern reservation-service
+```
+
+They are kept for 7 days. `kubectl logs` only reaches a pod that is still
+alive, which on spot nodes with a 4-hour lease is usually not the one that
+failed.
+
 ### Typical day
 
 ```mermaid
@@ -312,8 +332,17 @@ of clusters. Do not add one back per cluster.
 | Symptom | Cause |
 |---|---|
 | `You must be logged in to the server (Unauthorized)` | Missing EKS access entry — see Part 4, Step 4 |
-| `no cluster 'rentez'` from a deploy run | Nobody has run `make aws-up`. Expected outside working sessions. |
+| `no cluster 'rentez-dev'` from a deploy run | Nobody has run `make aws-up` for that environment. Expected outside working sessions. |
 | `kubectl get hpa` shows `<unknown>` CPU | metrics-server not running; HPAs cannot scale |
 | `exec format error` in a pod | An arm64 image on x86 nodes — build with `--platform linux/amd64` |
 | `no image tagged 'x' in ECR` | Deploying a tag that was never built. Merge to `dev`, or `make aws-images`. |
 | `$'\r': command not found` | CRLF line endings — `.gitattributes` should prevent this; re-clone |
+| An API call returns `200` with `index.html` in the body | That path has no ALB rule, so CloudFront fell through to the SPA. Check the service's `ingress.enabled` in `deploy/helm/values/`. |
+| `make aws-status` says "not bootstrapped" while things are running | Fixed — update your checkout. It read the post-split stack names against a pre-split account. |
+
+Two more places to look before guessing: `aws logs tail /rentez/cluster` for
+what the services said, and `./scripts/smoke.sh` against the environment URL for
+whether the booking flow works end to end. The smoke test is safe to run
+repeatedly against a deployed environment — it picks its car from the
+availability response and moves its booking window per run, rather than booking
+car 1 over a fixed window and then failing on its own leftovers.

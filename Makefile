@@ -300,3 +300,21 @@ aws-images: ## Build and push all five service images to ECR
 .PHONY: aws-nuke
 aws-nuke: ## aws-down, then delete the persistent stack too. End of semester only.
 	@$(AWS_SCRIPTS)/aws-nuke.sh
+
+# ============================================================== performance
+# k6 load tests - see docs/quality-attributes.md. TARGET=local (default, the
+# gateway on :8080), aws (the CloudFront URL) or cluster (k6 as a Job in EKS,
+# hitting the ALB). RATE= and PEAK= pass through to the scripts.
+PERF := TARGET="$(or $(TARGET),local)" RATE="$(RATE)" PEAK="$(PEAK)" bash perf/run.sh
+
+.PHONY: perf-smoke perf-load perf-stress perf-spike perf-plot
+perf-smoke: ## One user, 30s - sanity check before any load test
+	@$(PERF) smoke
+perf-load: ## PERFORMANCE: steady load judged against SLOs (RATE=30)
+	@$(PERF) load
+perf-stress: ## SCALABILITY: ramp until HPA + Cluster Autoscaler react (PEAK=300)
+	@$(PERF) stress
+perf-spike: ## SCALABILITY: sudden 10x jump in load (PEAK=300)
+	@$(PERF) spike
+perf-plot: ## Chart a run: make perf-plot RUN=perf/results/stress-...
+	@python3 perf/plot.py "$(or $(RUN),$(shell ls -dt perf/results/*/ | head -1))"

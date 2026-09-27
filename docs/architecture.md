@@ -6,6 +6,11 @@ Five Spring Boot services and a React frontend. One CloudFront distribution is
 the only public entry point: it serves the React build from S3 at `/` and
 proxies `/api/*` to a single ALB in front of EKS.
 
+This describes **one** environment. The shared account runs two of them — `dev`
+and `prod` — each with its own cluster, namespace, CloudFront distribution and
+URL, sharing the VPC, the ECR repositories and the RDS *instance* underneath.
+See [Two environments in one account](aws-team-setup.md#two-environments-in-one-account).
+
 ```mermaid
 flowchart TB
     User([Browser])
@@ -18,12 +23,12 @@ flowchart TB
     subgraph VPC["VPC 10.42.0.0/16"]
         ALB[Application Load Balancer<br/>one ALB via IngressGroup 'rentez']
 
-        subgraph EKS["EKS cluster 'rentez' — spot nodes, 2-5x t3/m5.large"]
+        subgraph EKS["EKS cluster (rentez / rentez-dev / rentez-prod) — spot nodes, 2-5x t3/m5.large"]
             ACC[account-service<br/>/api/accounts]
             CAT[catalog-service<br/>/api/catalog]
             RES[reservation-service<br/>/api/reservations]
             PAY[payment-service<br/>/api/payments]
-            NOT[notification-service<br/>internal only]
+            NOT[notification-service<br/>/api/notifications]
         end
 
         RDS[(RDS PostgreSQL 16<br/>db.t4g.micro, private subnets<br/>5 schemas, 5 roles)]
@@ -34,14 +39,16 @@ flowchart TB
         SQS[/SQS booking-events<br/>+ DLQ/]
         SSM[SSM Parameter Store<br/>JWT + DB passwords]
         ECR[(ECR<br/>rentez-service images)]
+        CW[(CloudWatch Logs<br/>/rentez/cluster · 7 days)]
     end
 
     User -->|HTTPS| CF
     CF -->|"/"| S3F
     CF -->|"/api/*"| ALB
-    ALB --> ACC & CAT & RES & PAY
+    ALB --> ACC & CAT & RES & PAY & NOT
     ACC & CAT & RES & PAY --> NOT
     ACC & CAT & RES & PAY & NOT --> RDS
+    EKS -.container logs.-> CW
     RES --> SQS --> NOT
     ACC --> DDB
     EKS -.reads secrets.-> SSM
@@ -56,10 +63,25 @@ flowchart TB
 | catalog-service | `/api/catalog` | `fleet_user` | 2–6 |
 | reservation-service | `/api/reservations` | `booking_user` | 2–10 |
 | payment-service | `/api/payments` | `payment_user` | 2–4 |
-| notification-service | *(none — internal)* | `notification_user` | 1 |
+| notification-service | `/api/notifications` | `notification_user` | 1 (no HPA) |
 
 Each service owns its own PostgreSQL schema and connects with its own role. No
 service reads another's tables — cross-service data goes over HTTP or SQS.
+
+**notification-service is public, and was not always.** Its Helm values used to
+disable the ingress on the grounds that it "has no public API", which was
+untrue: `NotificationController` serves `/api/notifications/me` and
+`/me/unread-count`, and the frontend's notifications page calls both. With no
+ALB rule for that path, CloudFront fell through to the SPA and returned
+`index.html` with a `200` — a status code that passes any check and a body that
+parses as garbage. The ingress now sits at `group.order 104`, after the other
+four.
+
+It is the one service with **no HPA**. It is a queue consumer, and CPU is the
+wrong signal for one: a consumer falling behind is blocked, not busy, so
+utilisation stays low however deep the backlog gets. An HPA there would draw a
+healthy-looking dashboard over a growing backlog. Scaling it properly means KEDA
+on queue depth, which is out of scope.
 
 ## Request path
 
@@ -96,6 +118,33 @@ sequenceDiagram
 - **`/internal/*` paths are blocked at the ALB** by a deny rule at
   `group.order 10`, so service-to-service endpoints are never publicly routable.
 
+## Logs outlive the cluster
+
+`kubectl logs` reaches a live pod on a live cluster. This environment is torn
+down every few hours onto spot nodes, so the logs from the run that actually
+failed were routinely gone before anyone looked at them.
+
+`make aws-up` installs **Fluent Bit** (`eks/aws-for-fluent-bit`, not `fluent/` —
+only the AWS build carries the CloudWatch output plugin) with an IRSA service
+account scoped to `/rentez/*` and nothing else. Every container's stdout lands
+in one log group:
+
+```bash
+aws logs tail /rentez/cluster --follow --filter-pattern account-service
+```
+
+One group, not one per service: `cloudwatch_logs` has a `log_group_template`,
+but its record accessor rejects a literal prefix before an accessor. The stream
+name carries the pod, namespace and container, so filtering does the same job.
+
+Retention is capped at **7 days** (`LOG_RETENTION_DAYS`). CloudWatch keeps
+events forever by default and bills for the storage indefinitely, including for
+clusters destroyed months ago — a charge nobody goes looking for.
+
+Fluent Bit tails from the *end* of each container log, so nothing written before
+it started is captured, and Spring Boot logs no line at all for a successful
+request. A quiet service is not necessarily a broken one.
+
 ## Two layers, two lifetimes
 
 ```mermaid
@@ -120,7 +169,7 @@ flowchart LR
 
 | Layer | Contains | Cost | Created by |
 |---|---|---|---|
-| **Persistent** | VPC, CloudFront, S3, ECR, DynamoDB, SQS, SSM, budgets | ~$0.80/month | `make aws-bootstrap` (once per account) |
+| **Persistent** | VPC, CloudFront, S3, ECR, DynamoDB, SQS, SSM, budgets | ~$0.80/month | `make aws-bootstrap` (account stack once per account; environment stack once per environment) |
 | **Ephemeral** | EKS cluster, node group, ALB, RDS | ~$0.21/hour | `make aws-up` (daily) |
 
 The ephemeral layer holds a **lease**: `make aws-up` writes a deadline to SSM at

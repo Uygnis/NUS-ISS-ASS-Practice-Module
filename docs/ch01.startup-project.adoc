@@ -851,6 +851,15 @@ build has no base URL baked into it either.
   Note the local Postgres container is started with `max_connections=200`, which
   is deliberately *more* than RDS allows, so this failure cannot reproduce on
   your laptop.
+* *With a pool that small, never need two connections at once, and never hold
+  one while waiting on the network.* A `REQUIRES_NEW` call from inside a
+  transaction takes a second connection while the first is held; three
+  concurrent requests doing that deadlock a pool of 3. A transaction open
+  across an HTTP call to another service spends a connection on waiting. Both
+  collapsed the load test at 50 requests/s with idle CPUs - see
+  link:quality-attributes.md[Quality Attributes]. Call other services before
+  the transaction starts, and keep `hikari.connection-timeout` short (2 s) so
+  overload fails fast instead of queueing.
 
 == Where to go next
 
