@@ -296,17 +296,18 @@ done
 # wrong are routinely gone before anyone looks. Fluent Bit copies every
 # container's stdout to CloudWatch, where it outlives both.
 #
-# ONE GROUP, NOT ONE PER SERVICE. cloudwatch_logs supports a log_group_template,
+# ONE GROUP PER ENVIRONMENT, NOT ONE PER SERVICE. The group is LOG_GROUP from
+# lib.sh: /rentez/cluster for the original, /rentez/<env>/cluster for the others. cloudwatch_logs supports a log_group_template,
 # but its record accessor rejects a literal prefix before an accessor - a
 # template of "/rentez/$kubernetes['namespace_name']" fails to parse with
 # "bad input character '/'" and the pods crash-loop on init. So everything goes
-# to one group and the STREAM name carries the detail:
+# to one group per environment and the STREAM name carries the detail:
 #
-#   group   /rentez/cluster
+#   group   /rentez/cluster  (prod)   /rentez/dev/cluster  (dev)
 #   stream  fluentbit-kube.var.log.containers.<pod>_<namespace>_<container>-<id>.log
 #
 # Filter by service name in the console, or:
-#   aws logs tail /rentez/cluster --follow --filter-pattern account-service
+#   make aws-logs-dev S=account-service      (or aws-logs-prod)
 #
 # RETENTION IS SET DELIBERATELY. CloudWatch keeps log events forever by default
 # and bills for the storage indefinitely - including for clusters destroyed
@@ -330,14 +331,14 @@ helm upgrade --install aws-for-fluent-bit eks/aws-for-fluent-bit \
 	--set serviceAccount.name=aws-for-fluent-bit \
 	--set cloudWatchLogs.enabled=true \
 	--set cloudWatchLogs.region="$AWS_REGION" \
-	--set cloudWatchLogs.logGroupName=/rentez/cluster \
+	--set cloudWatchLogs.logGroupName="$LOG_GROUP" \
 	--set cloudWatchLogs.autoCreateGroup=true \
 	--set cloudWatchLogs.logRetentionDays="$LOG_RETENTION_DAYS" \
 	--set firehose.enabled=false \
 	--set kinesis.enabled=false \
 	--set elasticsearch.enabled=false \
 	--wait >/dev/null
-ok "fluent-bit — logs at /rentez/cluster, kept $LOG_RETENTION_DAYS days"
+ok "fluent-bit — logs at $LOG_GROUP, kept $LOG_RETENTION_DAYS days"
 
 # PINNED TO THE CLUSTER'S MINOR VERSION, and checked against it. Unpinned, the
 # chart installs the newest image, which watches APIs a 1.31 control plane does

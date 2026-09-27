@@ -51,6 +51,16 @@ else
 	ENV_PARAM_PREFIX="/rentez/env"
 fi
 EXPIRES_PARAM="$ENV_PARAM_PREFIX/expires-at"
+# This environment's CloudWatch log group. Each cluster runs its own Fluent Bit,
+# but every one wrote to /rentez/cluster, so dev and prod logs were interleaved
+# in one group - and filtering by service name matched both. The original keeps
+# its name, so existing logs and bookmarks still work.
+if [ -n "$ENVIRONMENT_NAME" ]; then
+	LOG_GROUP="/rentez/$ENVIRONMENT_NAME/cluster"
+else
+	LOG_GROUP="/rentez/cluster"
+fi
+
 # The make-target suffix for this environment, for the hints scripts print:
 # `make aws-down-dev`, or `-prod` for the unsuffixed original.
 MAKE_ENV="${ENVIRONMENT_NAME:-prod}"
