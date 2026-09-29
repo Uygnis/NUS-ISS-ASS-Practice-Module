@@ -89,7 +89,7 @@ fi
 
 # ------------------------------------------------------------------ 1. services
 step "1/2  Services"
-kubectl apply -f "$REPO_ROOT/deploy/k8s/00-internal-deny.yaml" >/dev/null
+kubectl apply --namespace "$NAMESPACE" -f "$REPO_ROOT/deploy/k8s/00-internal-deny.yaml" >/dev/null
 ok "internal-path deny rule"
 
 # SEED=1 only from aws-up, onto an empty database (see there). A later deploy

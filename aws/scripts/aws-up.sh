@@ -280,7 +280,7 @@ ok "aws-load-balancer-controller"
 say "waiting for the ingress admission webhook to serve a matching certificate"
 WEBHOOK_OK=0
 for _ in $(seq 1 30); do
-	if kubectl apply --dry-run=server -f "$REPO_ROOT/deploy/k8s/00-internal-deny.yaml" >/dev/null 2>&1; then
+	if kubectl apply --dry-run=server --namespace "$NAMESPACE" -f "$REPO_ROOT/deploy/k8s/00-internal-deny.yaml" >/dev/null 2>&1; then
 		WEBHOOK_OK=1; break
 	fi
 	sleep 5

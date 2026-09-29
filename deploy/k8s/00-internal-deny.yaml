@@ -19,7 +19,10 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: rentez-internal-deny
-  namespace: rentez
+  # NO namespace here: aws-deploy.sh and aws-up.sh apply this with
+  # --namespace "$NAMESPACE". It was hardcoded to `rentez`, so on rentez-dev
+  # (namespace rentez-dev) the webhook probe failed with 'namespaces "rentez"
+  # not found' and aws-up stopped, blaming the webhook.
   annotations:
     alb.ingress.kubernetes.io/group.name: rentez
     alb.ingress.kubernetes.io/group.order: "10"
