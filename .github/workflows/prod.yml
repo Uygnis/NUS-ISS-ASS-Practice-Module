@@ -23,9 +23,18 @@ jobs:
     # THIS GUARD WAS MISSING. `workflow_run` fires on completion, not on
     # success, so without it a RED CI run deployed to production anyway — the
     # one place that must never happen. dev.yml always had it; prod.yml did not.
+    #
+    # Push runs only. CI also runs on pull requests, and a PR whose head is
+    # this branch completes CI on the SAME commit, so each merge fired two
+    # deploys; the second died on "failed to reserve cache".
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
     uses: ./.github/workflows/deploy.yml
     with:
       environment: prod
+      # The commit CI actually tested. Without it deploy.yml falls back to
+      # github.sha, which under workflow_run is the default branch's head.
+      # Empty on a manual run, where github.sha is already the chosen ref.
+      sha: ${{ github.event.workflow_run.head_sha }}

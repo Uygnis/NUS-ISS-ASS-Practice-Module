@@ -21,7 +21,14 @@ ingress:
   path: /api/catalog
   order: 101
 
+# minReplicas 3, not 2. In the AWS stress test (2026-09-27) catalog ran out
+# of its 3 database connections at 3-4 pods, with CPU only 70-90% of its
+# request - not far enough over the 60% target to scale quickly - and
+# failed ~11,000 requests before reaching 6 pods at minute 11. Starting at 3
+# gives it 9 connections before the HPA has to react. The maximum, and so
+# the RDS connection budget, is unchanged. The real fix is to scale on
+# hikaricp.connections.pending rather than CPU (docs/quality-attributes.md).
 autoscaling:
   enabled: true
-  minReplicas: 2
+  minReplicas: 3
   maxReplicas: 6

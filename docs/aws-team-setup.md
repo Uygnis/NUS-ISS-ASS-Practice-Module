@@ -128,21 +128,45 @@ Checks every tool, your credentials, and the state of the shared account.
 ```bash
 export AWS_PROFILE=rentez
 
-make aws-status                 # what is running, cost, who has it, time left
-make aws-up                     # ~20 min, 4-hour lease, ~$0.21/hr
-make aws-deploy                 # ~3 min, redeploy code only
-make aws-extend HOURS=4         # push the lease out
-make aws-down                   # dump to S3, then destroy hourly-billed things
+make aws-status-dev             # what is running, cost, who has it, time left
+make aws-up-dev                 # ~20 min, 4-hour lease, ~$0.21/hr
+make aws-deploy-dev TAG=abc1234 # ~3 min, redeploy code only
+make aws-extend-dev HOURS=4     # push the lease out
+make aws-down-dev               # dump to S3, then destroy hourly-billed things
 ```
+
+Every target has a `-prod` twin (`make aws-up-prod`, `make aws-down-prod`, …)
+that acts on the `rentez` environment instead. The bare `make aws-up` and
+`make aws-down` refuse to run and ask which one you mean: with two environments
+in one account, guessing is how a teardown lands on the wrong one.
 
 Useful variants:
 
 ```bash
-make aws-up TTL_HOURS=8         # longer lease for a demo day
-make aws-up TAG=abc1234         # deploy a specific image tag
-make aws-up RESTORE=0           # start from an empty database
-make aws-down KEEP_DB=1         # keep RDS running (~$13/month) for tomorrow
+make aws-up-dev TTL_HOURS=8     # longer lease for a demo day
+make aws-up-dev TAG=abc1234     # deploy a specific image tag
+make aws-up-dev RESTORE=0       # start from an empty database
+make aws-down-dev KEEP_DB=1     # keep RDS running (~$13/month) for tomorrow
 ```
+
+`make aws-status` reports on the stacks the account **actually has**, not the
+ones the current defaults name — an account bootstrapped before the stack split
+used to read as "not bootstrapped" while its cluster was up and billing. An
+`ACCOUNT_STACK` you set yourself is never quietly substituted, and the output
+names the stack whenever it is not the one the labels imply.
+
+Each target acts on **one** environment — the one in its name. With `dev` and `prod` both up,
+tearing down the one you were working in leaves the other running.
+
+Reading logs does not need a cluster shell:
+
+```bash
+make aws-logs-dev S=reservation-service     # or aws-logs-prod; SINCE=2h FOLLOW=0
+```
+
+They are kept for 7 days. `kubectl logs` only reaches a pod that is still
+alive, which on spot nodes with a 4-hour lease is usually not the one that
+failed.
 
 ### Typical day
 
@@ -264,11 +288,8 @@ principal that created the cluster, so the pipeline needs an EKS *access entry*
 as well. `make aws-up` creates one when told the role ARN:
 
 ```bash
-export CI_ROLE_ARN=arn:aws:iam::<shared-account-id>:role/rentez-ci-deploy
-CLUSTER_NAME=rentez-dev NAMESPACE=rentez-dev \
-  ENVIRONMENT_STACK=rentez-environment-dev ENVIRONMENT_NAME=dev \
-  DB_NAME=rentez_dev \
-  make aws-up
+make aws-up-dev      # looks up rentez-ci-deploy and grants it access itself
+make aws-up-prod     # or pass CI_ROLE_ARN=... to use a different role
 ```
 
 Once per cluster — two environments means running this twice, each with its own
@@ -283,11 +304,26 @@ the security groups and the five ECR repositories — none of which benefit from
 duplication, and the shared VPC is what lets a second cluster cost no second
 NAT gateway.
 
-The database is shared at the *instance* level and separate at the *database*
-level: `DB_NAME` gives each environment its own database inside the one RDS
-instance, with the five per-service schemas created in each by `make aws-up`. A
-second instance would be a second hourly bill for isolation the database
-already provides.
+**Each environment has its own RDS instance**, from its own database stack:
+`rentez-database` / `rentez-postgres` for prod (the original names, unchanged)
+and `rentez-database-dev` / `rentez-postgres-dev` for dev. `lib.sh` derives the
+stack from `ENVIRONMENT_NAME`, so no extra variable is needed anywhere. Inside
+each instance, `make aws-up` creates the environment's `DB_NAME` and the five
+per-service schemas.
+
+They used to share one instance, separated only by database name, to save a
+second hourly bill (~$0.018/hr per `db.t4g.micro`). That cost more than it
+saved: both environments' connections counted against one ~112-connection
+ceiling (150 wanted at full scale-out), and a teardown had to check whether
+another environment was still up before it could delete anything. With one
+instance each, `make aws-down-dev` and dev's reaper delete dev's instance and
+nothing else.
+
+Each environment also has its own lease: `/rentez/env/<name>/expires-at` and
+`/rentez/env/<name>/held-by`, or `/rentez/env/...` for the unsuffixed original,
+derived from `ENVIRONMENT_NAME` in `lib.sh` by the same rule the template uses.
+Before this, every script read and wrote the original's, so `make aws-up` for dev
+armed prod's timer and dev's own reaper was never armed.
 
 `10-persistent.yaml` stays in the tree because the account bootstrapped before
 the split still runs on it. It needs no migration: that one stack publishes all
@@ -312,8 +348,17 @@ of clusters. Do not add one back per cluster.
 | Symptom | Cause |
 |---|---|
 | `You must be logged in to the server (Unauthorized)` | Missing EKS access entry — see Part 4, Step 4 |
-| `no cluster 'rentez'` from a deploy run | Nobody has run `make aws-up`. Expected outside working sessions. |
+| `no cluster 'rentez-dev'` from a deploy run | Nobody has run `make aws-up` for that environment. Expected outside working sessions. |
 | `kubectl get hpa` shows `<unknown>` CPU | metrics-server not running; HPAs cannot scale |
 | `exec format error` in a pod | An arm64 image on x86 nodes — build with `--platform linux/amd64` |
 | `no image tagged 'x' in ECR` | Deploying a tag that was never built. Merge to `dev`, or `make aws-images`. |
 | `$'\r': command not found` | CRLF line endings — `.gitattributes` should prevent this; re-clone |
+| An API call returns `200` with `index.html` in the body | That path has no ALB rule, so CloudFront fell through to the SPA. Check the service's `ingress.enabled` in `deploy/helm/values/`. |
+| `make aws-status` says "not bootstrapped" while things are running | Fixed — update your checkout. It read the post-split stack names against a pre-split account. |
+
+Two more places to look before guessing: `make aws-logs-dev` (or `-prod`) for
+what the services said, and `./scripts/smoke.sh` against the environment URL for
+whether the booking flow works end to end. The smoke test is safe to run
+repeatedly against a deployed environment — it picks its car from the
+availability response and moves its booking window per run, rather than booking
+car 1 over a fixed window and then failing on its own leftovers.

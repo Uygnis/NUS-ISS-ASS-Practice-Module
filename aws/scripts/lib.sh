@@ -25,7 +25,6 @@ ACCOUNT_STACK="${ACCOUNT_STACK:-rentez-account}"
 # bootstrapped before the split" in aws/README.md.
 LEGACY_STACK="${LEGACY_STACK:-rentez-persistent}"
 ENVIRONMENT_STACK="${ENVIRONMENT_STACK:-rentez-environment}"
-DATABASE_STACK="${DATABASE_STACK:-rentez-database}"
 GUARDRAILS_STACK="${GUARDRAILS_STACK:-rentez-guardrails}"
 NAMESPACE="${NAMESPACE:-rentez}"
 
@@ -39,11 +38,46 @@ DB_NAME="${DB_NAME:-rentez}"
 # unsuffixed resource names, so the pre-split environment is adopted rather
 # than rebuilt.
 ENVIRONMENT_NAME="${ENVIRONMENT_NAME:-}"
+
+# This environment's database stack, and so its own RDS instance. Derived from
+# ENVIRONMENT_NAME like everything below, so CI needs no DATABASE_STACK variable:
+# an empty one falls through to this. The original keeps rentez-database.
+if [ -n "$ENVIRONMENT_NAME" ]; then
+	DATABASE_STACK="${DATABASE_STACK:-rentez-database-$ENVIRONMENT_NAME}"
+else
+	DATABASE_STACK="${DATABASE_STACK:-rentez-database}"
+fi
+
+# This environment's lease and holder, by the same rule 15-environment.yaml
+# uses to name ExpiresAtParam. These were hardcoded to /rentez/env/..., so with
+# two environments `make aws-up` for dev armed PROD's timer (dev's reaper, which
+# reads /rentez/env/dev/expires-at, was never armed), and `make aws-down` for dev
+# disarmed prod's.
+if [ -n "$ENVIRONMENT_NAME" ]; then
+	ENV_PARAM_PREFIX="/rentez/env/$ENVIRONMENT_NAME"
+else
+	ENV_PARAM_PREFIX="/rentez/env"
+fi
+EXPIRES_PARAM="$ENV_PARAM_PREFIX/expires-at"
+# This environment's CloudWatch log group. Each cluster runs its own Fluent Bit,
+# but every one wrote to /rentez/cluster, so dev and prod logs were interleaved
+# in one group - and filtering by service name matched both. The original keeps
+# its name, so existing logs and bookmarks still work.
+if [ -n "$ENVIRONMENT_NAME" ]; then
+	LOG_GROUP="/rentez/$ENVIRONMENT_NAME/cluster"
+else
+	LOG_GROUP="/rentez/cluster"
+fi
+
+# The make-target suffix for this environment, for the hints scripts print:
+# `make aws-down-dev`, or `-prod` for the unsuffixed original.
+MAKE_ENV="${ENVIRONMENT_NAME:-prod}"
+HELD_BY_PARAM="$ENV_PARAM_PREFIX/held-by"
 SERVICES=(account-service catalog-service reservation-service payment-service notification-service)
 
 # Pod image used for every one-off database task. Chosen so that no custom image
 # has to be built and pushed before the first teardown can take a backup.
-DB_TOOLS_IMAGE="postgres:16-alpine"
+DB_TOOLS_IMAGE="postgres:17-alpine"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
@@ -290,13 +324,13 @@ arm_reaper() {
 import datetime as dt
 print((dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=$hours)).replace(microsecond=0).isoformat())
 ")"
-	aws ssm put-parameter --name /rentez/env/expires-at --type String \
+	aws ssm put-parameter --name "$EXPIRES_PARAM" --type String \
 		--value "$deadline" --overwrite >/dev/null
 	printf '%s' "$deadline"
 }
 
 disarm_reaper() {
-	aws ssm put-parameter --name /rentez/env/expires-at --type String \
+	aws ssm put-parameter --name "$EXPIRES_PARAM" --type String \
 		--value none --overwrite >/dev/null 2>&1 || true
 }
 
@@ -316,7 +350,7 @@ disarm_reaper() {
 #
 # Stored as "<name>|<iso-8601 UTC>".
 hold_env() {
-	aws ssm put-parameter --name /rentez/env/held-by --type String \
+	aws ssm put-parameter --name "$HELD_BY_PARAM" --type String \
 		--value "$(caller_name)|$(python3 -c "
 import datetime as dt
 print(dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat())
@@ -324,13 +358,13 @@ print(dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat())
 }
 
 release_env() {
-	aws ssm put-parameter --name /rentez/env/held-by --type String \
+	aws ssm put-parameter --name "$HELD_BY_PARAM" --type String \
 		--value none --overwrite >/dev/null 2>&1 || true
 }
 
 # Prints "<name>|<iso>" or "none".
 current_holder() {
-	aws ssm get-parameter --name /rentez/env/held-by \
+	aws ssm get-parameter --name "$HELD_BY_PARAM" \
 		--query Parameter.Value --output text 2>/dev/null || printf 'none'
 }
 

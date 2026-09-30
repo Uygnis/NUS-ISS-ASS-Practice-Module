@@ -34,7 +34,7 @@ if ! cluster_exists && ! stack_exists "$DATABASE_STACK"; then
 	die "nothing is running — there is no lease to extend. Start with: make aws-up"
 fi
 
-CURRENT="$(aws ssm get-parameter --name /rentez/env/expires-at \
+CURRENT="$(aws ssm get-parameter --name "$EXPIRES_PARAM" \
 	--query Parameter.Value --output text 2>/dev/null || echo none)"
 HOLDER="$(holder_name)"
 ME="$(caller_name)"

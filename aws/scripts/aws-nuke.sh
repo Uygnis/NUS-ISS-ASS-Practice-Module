@@ -109,7 +109,7 @@ step "Deleting secrets"
 for name in /rentez/jwt-secret /rentez/db/master-password \
             /rentez/db/auth-password /rentez/db/fleet-password \
             /rentez/db/booking-password /rentez/db/payment-password \
-            /rentez/db/notification-password /rentez/env/expires-at; do
+            /rentez/db/notification-password "$EXPIRES_PARAM" "$HELD_BY_PARAM"; do
 	aws ssm delete-parameter --name "$name" >/dev/null 2>&1 && ok "deleted $name" || true
 done
 

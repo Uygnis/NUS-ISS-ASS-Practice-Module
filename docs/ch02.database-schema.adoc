@@ -59,7 +59,7 @@ setup.
 [[topology]]
 == Topology
 
-*One PostgreSQL 16 instance, one database, five schemas.* Locally a Docker
+*One PostgreSQL 17 instance, one database, five schemas.* Locally a Docker
 container; on AWS one `db.t4g.micro` RDS instance.
 
 Postgres separates `SCHEMA` from `DATABASE`, so this is one database named

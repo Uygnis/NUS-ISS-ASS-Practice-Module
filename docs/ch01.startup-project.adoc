@@ -44,7 +44,7 @@ rarely need all ten at once — see <<modes>>.
 | `catalog-service`         | `8083` | Fleet and vehicle catalogue — PRD module M2
 | `notification-service`    | `8084` | Notifications — PRD module M5
 | `payment-service`         | `8085` | Payment and refund — PRD module M4
-| PostgreSQL 16             | `5432` | One instance, one database, five schemas
+| PostgreSQL 17             | `5432` | One instance, one database, five schemas
 | Adminer                   | `8090` | Click-to-browse database UI
 | DynamoDB Local            | `8000` | Sessions, availability projection, audit trail
 |===
@@ -319,7 +319,7 @@ menu:Run[Run... > Edit Configurations > Compound] to launch several at once.
 
 === One instance, five schemas
 
-RentEZ uses *a single PostgreSQL 16 instance hosting five independent schemas* —
+RentEZ uses *a single PostgreSQL 17 instance hosting five independent schemas* —
 locally in Docker, and on AWS as one `db.t4g.micro` RDS instance. This matches
 PRD §2.1 and costs the same as one schema, because RDS bills the instance, not
 what is inside it.
@@ -640,7 +640,7 @@ class CatalogServiceApplicationTests {
 
     @Container
     @ServiceConnection                       // <1>
-    static PostgreSQLContainer db = new PostgreSQLContainer("postgres:16-alpine");
+    static PostgreSQLContainer db = new PostgreSQLContainer("postgres:17-alpine");
 
     @Test
     void contextLoads() { }
@@ -851,6 +851,15 @@ build has no base URL baked into it either.
   Note the local Postgres container is started with `max_connections=200`, which
   is deliberately *more* than RDS allows, so this failure cannot reproduce on
   your laptop.
+* *With a pool that small, never need two connections at once, and never hold
+  one while waiting on the network.* A `REQUIRES_NEW` call from inside a
+  transaction takes a second connection while the first is held; three
+  concurrent requests doing that deadlock a pool of 3. A transaction open
+  across an HTTP call to another service spends a connection on waiting. Both
+  collapsed the load test at 50 requests/s with idle CPUs - see
+  link:quality-attributes.md[Quality Attributes]. Call other services before
+  the transaction starts, and keep `hikari.connection-timeout` short (2 s) so
+  overload fails fast instead of queueing.
 
 == Where to go next
 

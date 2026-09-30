@@ -3,7 +3,6 @@ package org.rentez.accountservice.service;
 import org.rentez.accountservice.domain.AuditLog;
 import org.rentez.accountservice.repository.AuditLogRepository;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /** Writes an audit trail entry for a security- or business-relevant action. */
@@ -17,19 +16,19 @@ public class AuditService {
 	}
 
 	/**
-	 * Runs in its own transaction, on purpose.
+	 * Joins the caller's transaction (or opens one if there is none).
 	 *
-	 * <p>The monolith had no transactions at all, so an audit row committed
-	 * independently of the operation that triggered it. Now that the callers are
-	 * {@code @Transactional}, a plain call would join their transaction and be
-	 * rolled back with them - which would silently erase the trail for exactly
-	 * the failures worth auditing. {@code REQUIRES_NEW} preserves the old
-	 * behaviour deliberately rather than by omission.
+	 * <p>This was {@code REQUIRES_NEW}, which takes a SECOND pooled connection
+	 * while the caller's transaction still holds its first. With a pool of 3,
+	 * three concurrent callers deadlock until Hikari's timeout - the pattern
+	 * that collapsed reservation-service at 50 actions/s (docs/quality-attributes.md).
+	 * It is fixed here too before this service meets the same load.
 	 *
-	 * <p>The same reasoning applies with more force in payment-service, where a
-	 * declined payment is persisted and audited and only then throws.
+	 * <p>Joining loses nothing: every caller audits as the last step of an
+	 * operation that commits, and none audits a failure before throwing. The
+	 * audit row now commits with the change it describes.
 	 */
-	@Transactional(propagation = Propagation.REQUIRES_NEW)
+	@Transactional
 	public void log(String actorEmail, String action, String entityType, Long entityId, String details) {
 		auditLogRepository.save(new AuditLog(actorEmail, action, entityType, entityId, details));
 	}

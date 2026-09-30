@@ -115,18 +115,21 @@ Confirm the budget confirmation email when it arrives, or the alarms are inert.
 ## Every day
 
 ```bash
-make aws-up          # ~20 min, 4-hour lease
-make aws-status      # what is running, burn rate, time left
-make aws-down        # dump to S3, then destroy everything hourly-billed
+make aws-up-dev      # ~20 min, 4-hour lease   (aws-up-prod for rentez)
+make aws-status-dev  # what is running, burn rate, time left
+make aws-down-dev    # dump to S3, then destroy everything hourly-billed
 ```
+
+The bare `make aws-up` / `make aws-down` refuse to run without the environment's
+variables and point at the `-dev` / `-prod` targets.
 
 Useful variants:
 
 ```bash
-make aws-up TTL_HOURS=8      # longer lease for a demo day
-make aws-up TAG=abc1234      # deploy a specific image
-make aws-up RESTORE=0        # start from an empty database
-make aws-down KEEP_DB=1      # keep RDS running (~$13/month) for tomorrow
+make aws-up-dev TTL_HOURS=8  # longer lease for a demo day
+make aws-up-dev TAG=abc1234  # deploy a specific image
+make aws-up-dev RESTORE=0    # start from an empty database
+make aws-down-dev KEEP_DB=1  # keep RDS running (~$13/month) for tomorrow
 ```
 
 ### Redeploying without rebuilding the environment
@@ -170,10 +173,12 @@ The daily loop on the shared account becomes: someone runs `make aws-up` once in
 the morning, and from then on **merging deploys**. Nobody else needs AWS
 credentials to ship.
 
-**Both branches deploy to the same cluster.** There is one environment, not a
-dev and a prod, so the most recent deploy is what is live regardless of which
-branch produced it. Each run's step summary names its branch, which is the only
-way to work out who overwrote whom.
+**Each branch deploys to its own environment.** A merge to `dev` deploys to the
+`dev` GitHub Environment (cluster `rentez-dev`, database `rentez_dev`, its own
+CloudFront URL) and a merge to `main` to `prod` — see step 3b below. They share
+the VPC, the ECR repositories and the RDS instance; they do not share a cluster,
+a database or a URL. Each run's step summary names the environment, the cluster
+and the URL it deployed to.
 
 ### Why OIDC and not `GITHUB_TOKEN`
 
@@ -265,11 +270,7 @@ is nothing to leak.
    Bring each cluster up with the same names it is configured with:
 
    ```bash
-   CLUSTER_NAME=rentez-dev NAMESPACE=rentez-dev \
-     ENVIRONMENT_STACK=rentez-environment-dev ENVIRONMENT_NAME=dev \
-     DB_NAME=rentez_dev \
-     CI_ROLE_ARN=arn:aws:iam::<account>:role/rentez-ci-deploy \
-     make aws-up
+   make aws-up-dev
    ```
 
 4. **Give the role access to the cluster.** IAM permission is not cluster
@@ -278,13 +279,9 @@ is nothing to leak.
    when told the role ARN, and must be told every time, because the cluster is
    ephemeral:
 
-   ```bash
-   export CI_ROLE_ARN=arn:aws:iam::<account>:role/rentez-ci-deploy
-   make aws-up
-   ```
-
-   Put that `export` in the shared account's shell profile and forget about it.
-   Skip it and deploys fail with `You must be logged in to the server
+   `make aws-up-dev` and `make aws-up-prod` look up `rentez-ci-deploy` and pass
+   it themselves; pass `CI_ROLE_ARN=...` to override. Called some other way
+   without it, deploys fail with `You must be logged in to the server
    (Unauthorized)`, which mentions neither IAM nor the missing access entry.
 
 ### A red Deploy run is often correct
@@ -328,7 +325,7 @@ Browser ──HTTPS──▶ CloudFront (permanent, free at rest)
      account 2→4 · catalog 2→6 · reservation 2→10 · payment 2→4 · notification 1
                                  │ JDBC
                      ┌───────────▼────────────────────────┐
-                     │ RDS PostgreSQL 16 · db.t4g.micro   │
+                     │ RDS PostgreSQL 17 · db.t4g.micro   │
                      │ private subnets · 5 schemas, 5 roles│
                      └────────────────────────────────────┘
 ```
@@ -342,12 +339,18 @@ require a frontend rebuild. See the long note in `frontend/vite.config.js`.
 
 ### Layers
 
-| File | Lifetime | Cost at rest |
-|---|---|---|
-| `cloudformation/00-guardrails.yaml` | forever, survives `aws-nuke` | $0 |
-| `cloudformation/10-persistent.yaml` | until `aws-nuke` | ~$0.80/mo |
-| `cloudformation/20-database.yaml` | `aws-up` → `aws-down` | — |
-| `eksctl/cluster.yaml` | `aws-up` → `aws-down` | — |
+| File | Scope | Lifetime | Cost at rest |
+|---|---|---|---|
+| `cloudformation/00-guardrails.yaml` | account | forever, survives `aws-nuke` | $0 |
+| `cloudformation/10-account.yaml` | account | until `aws-nuke` | ~$0 |
+| `cloudformation/15-environment.yaml` | environment | until `aws-nuke` | ~$0.80/mo |
+| `cloudformation/10-persistent.yaml` | pre-split accounts only | until `aws-nuke` | ~$0.80/mo |
+| `cloudformation/20-database.yaml` | environment | `aws-up` → `aws-down` | — |
+| `eksctl/cluster.yaml` | environment | `aws-up` → `aws-down` | — |
+
+`10-persistent.yaml` is the pre-split stack that held all of it; it stays in the
+tree for accounts bootstrapped before the split. See *Adopting an account
+bootstrapped before the split* below.
 
 `eksctl` is still CloudFormation: it generates and deletes
 `eksctl-rentez-*` stacks. Choosing it over hand-written EKS YAML saves several
@@ -367,7 +370,7 @@ Flyway and `SPRING_PROFILES_ACTIVE=seed` build a fresh world.
 There is deliberately **one** backup mechanism, not two. The RDS stack's
 `DeletionPolicy` is `Delete` rather than `Snapshot`, because one path that always
 runs and is verified beats two that are each half-trusted. A plain SQL dump is
-also portable — it restores into any Postgres 16, where a snapshot only restores
+also portable — it restores into any Postgres 17 or later, where a snapshot only restores
 into RDS.
 
 RDS is in private subnets with no public route, so the dump runs from a
@@ -507,6 +510,14 @@ eksctl create accessentry --cluster rentez --principal-arn <role-arn> \
 **`kubectl get hpa` shows `<unknown>` for CPU.** metrics-server did not install.
 The HPAs cannot scale without it, and nothing else reports an error.
 
+**Pods stay `Pending` and no node is ever added.** Check the Cluster
+Autoscaler's version against the cluster's:
+`kubectl -n kube-system get deploy cluster-autoscaler-aws-cluster-autoscaler -o jsonpath='{..image}'`.
+A newer minor than the control plane watches APIs the cluster does not serve,
+logs only `Failed to watch ... ResourceSlice` errors, and never runs its scaling
+loop. `aws-up.sh` pins `CLUSTER_AUTOSCALER_VERSION` and refuses a mismatch; bump
+it together with `version:` in `eksctl/cluster.yaml`.
+
 **An Ingress never gets an ADDRESS.** Usually the AWS Load Balancer Controller.
 `kubectl -n kube-system logs deploy/aws-load-balancer-controller`. If it
 complains about discovering subnets, check the `kubernetes.io/role/elb` tags on
@@ -533,10 +544,13 @@ confirm/cancel and stats endpoints are public.
 The application layer (Phase 1 — the PostgreSQL migration) is **verified**: 71
 backend tests, 33/33 end-to-end smoke checks against a clean volume.
 
-**The AWS layer in this directory has not been deployed.** It is statically
-validated — YAML parses, the eksctl template renders, `helm lint` and
-`helm template` pass for all five services, HPA bounds and path prefixes match
-the architecture document and `scripts/gateway.conf`, and every script passes
-`bash -n` — but no part of it has been run against a real account. Expect the
-first `make aws-bootstrap` and `make aws-up` to need iteration, and budget an
-afternoon for it. Run `make aws-status` liberally while you do.
+**The AWS layer in this directory has been deployed and run.** It is no longer
+only statically validated: the shared account has been bootstrapped, clusters
+have been brought up and torn down, and the pipeline has deployed to them. The
+round of fixes in #44–#50 — a missing notification ingress, API errors masked as
+`200 index.html`, logs that died with their pods, a status command that called a
+live environment "not bootstrapped", a smoke test that failed on its own
+leftovers — all came from running it rather than reading it.
+
+Expect it to still want attention on a fresh account, and run `make aws-status`
+liberally while you work.

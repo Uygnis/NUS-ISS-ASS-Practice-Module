@@ -157,7 +157,7 @@ Every datasource property defaults to `localhost`, and Compose overrides it with
 
 Catalog and notification have no outbound runtime dependencies at all, which means they can be built, tested and deployed entirely on their own.
 
-**Tech:** Spring Boot 4.1.0 · Java 21 · PostgreSQL 16 · Flyway · Spring Security (OAuth2 resource server) · Testcontainers · nginx · Docker Compose.
+**Tech:** Spring Boot 4.1.0 · Java 21 · PostgreSQL 17 · Flyway · Spring Security (OAuth2 resource server) · Testcontainers · nginx · Docker Compose.
 
 In AWS the same five services run on EKS against RDS PostgreSQL — see [Deployment](#deployment).
 
@@ -182,11 +182,14 @@ a Lambda tears everything down when it passes, so a forgotten cluster cannot
 become a $155 month.
 
 ```bash
-make aws-status      # what is running, burn rate, who has it, time left
-make aws-up          # ~20 min, 4-hour lease
-make aws-deploy      # ~3 min, redeploy code only — no infrastructure
-make aws-down        # dump to S3, then destroy everything billed by the hour
+make aws-status-dev  # what is running, burn rate, who has it, time left
+make aws-up-dev      # ~20 min, 4-hour lease
+make aws-deploy-dev  # ~3 min, redeploy code only — no infrastructure
+make aws-down-dev    # dump to S3, then destroy everything billed by the hour
 ```
+
+Each has a `-prod` twin for the `rentez` environment. The bare `make aws-up` and
+`make aws-down` ask which environment you mean rather than guess.
 
 `make aws-up` provisions; `make aws-deploy` deploys. That split is why a code
 change redeploys in three minutes instead of twenty, and why CI can deploy by
@@ -358,7 +361,7 @@ These are the ones where breaking them fails quietly rather than loudly:
 
 ### Testing
 
-Tests run against a **real PostgreSQL 16 container** via Testcontainers — not H2. H2 diverges from PostgreSQL on reserved words and JSON handling, and this project has already been bitten by it (`car.model_year` exists because `year` is reserved in H2). It is also the only place Flyway migrations execute and Hibernate validates entities against them.
+Tests run against a **real PostgreSQL 17 container** via Testcontainers — not H2. H2 diverges from PostgreSQL on reserved words and JSON handling, and this project has already been bitten by it (`car.model_year` exists because `year` is reserved in H2). It is also the only place Flyway migrations execute and Hibernate validates entities against them.
 
 Two things to know when writing tests:
 

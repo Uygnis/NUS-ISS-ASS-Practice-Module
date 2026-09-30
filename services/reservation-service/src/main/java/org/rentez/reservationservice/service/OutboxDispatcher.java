@@ -6,19 +6,25 @@ import org.rentez.reservationservice.repository.OutboxEventRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Propagation;
-import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Delivers exactly one outbox event, in its own transaction.
+ * Delivers exactly one outbox event, holding no database connection while it
+ * waits on the network.
  *
- * <p>A separate bean from {@link OutboxRelay} on purpose, and not an
- * implementation detail that could be folded back in. Spring's
- * {@code @Transactional} is proxy-based, so a call from the relay's loop to a
- * method on itself would bypass the proxy entirely and {@code REQUIRES_NEW}
- * would silently do nothing - every event in the batch would then share one
- * transaction, and a single failure would roll back deliveries that had already
- * succeeded.
+ * <p>This used to be one {@code REQUIRES_NEW} transaction around the whole
+ * delivery, HTTP call included, so the relay held a pooled connection for as
+ * long as notification-service took to answer. With a pool of 3 that was a third
+ * of the service's database capacity spent waiting on another service. Now the
+ * read and the status update are each a short repository transaction of their
+ * own, and the HTTP call sits between them with no transaction open.
+ *
+ * <p>Each event is still independent: a failure on one never undoes another's
+ * recorded delivery. Delivery is at-least-once as before - if the process dies
+ * between the send and the update, the next tick resends, and the consumer's
+ * unique index on event_id absorbs the duplicate.
+ *
+ * <p>Kept as a separate bean from {@link OutboxRelay} so the relay's loop stays
+ * free of delivery details.
  */
 @Component
 public class OutboxDispatcher {
@@ -33,7 +39,6 @@ public class OutboxDispatcher {
 		this.notificationClient = notificationClient;
 	}
 
-	@Transactional(propagation = Propagation.REQUIRES_NEW)
 	public boolean dispatchOne(Long id) {
 		OutboxEvent event = outboxRepository.findById(id).orElse(null);
 		if (event == null || event.getStatus() != OutboxEvent.Status.PENDING) {

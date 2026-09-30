@@ -92,7 +92,7 @@ echo "uploaded dumps/$STAMP.sql.gz (\${SIZE} bytes)"
 # DELETE A REJECTED DUMP, do not merely refuse it.
 # The upload streams, so a pg_dump that fails still leaves an object behind - an
 # empty gzip stream is 20 bytes. Left in place it becomes the NEWEST dump, and
-# the next `make aws-up` restores it in preference to the last good one,
+# the next \`make aws-up\` restores it in preference to the last good one,
 # reporting success while loading nothing. Failing loudly is not enough; the
 # artefact has to go too.
 if [ "\$SIZE" -le 1000 ]; then
@@ -143,6 +143,9 @@ fi
 
 # ---------------------------------------------------------------- 4. database
 step "4/5  Database"
+# This environment's OWN instance (DATABASE_STACK from lib.sh). Environments
+# used to share one, and this step then had to spare it while any other
+# cluster was up; with one instance each, it simply goes.
 if [ "$KEEP_DB" = "1" ]; then
 	warn "KEEP_DB=1 — leaving RDS running at about \$0.018/hour (~\$13/month)"
 	warn "it is now UNREACHABLE until the next 'make aws-up', because nothing else is in the VPC"

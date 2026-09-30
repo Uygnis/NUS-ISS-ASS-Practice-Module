@@ -92,6 +92,15 @@ on:
       environment:
         required: true
         type: string
+      # THE COMMIT TO BUILD AND DEPLOY. Callers triggered by workflow_run must
+      # pass github.event.workflow_run.head_sha: inside a workflow_run,
+      # github.sha and a bare actions/checkout both resolve to the DEFAULT
+      # branch, so Deploy Dev built and shipped main's code while its summary
+      # said "dev". Empty means github.sha, which is right for a manual run.
+      sha:
+        required: false
+        type: string
+        default: ""
 
   workflow_dispatch:
     inputs:
@@ -102,6 +111,9 @@ on:
           deploy to your own environment.
         required: false
         default: manual
+
+env:
+  DEPLOY_SHA: ${{ inputs.sha || github.sha }}
 
 concurrency:
   # Keyed on the Environment, because each one now names its own cluster and
@@ -201,6 +213,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -219,7 +233,7 @@ jobs:
       # works, and a full SHA copied out of a CI log is never a dead end.
       - name: Resolve tags
         id: tags
-        run: echo "short=$(echo '${{ github.sha }}' | cut -c1-7)" >> "$GITHUB_OUTPUT"
+        run: echo "short=$(echo "$DEPLOY_SHA" | cut -c1-7)" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -233,12 +247,15 @@ jobs:
           platforms: linux/amd64
           tags: |
             ${{ steps.ecr.outputs.registry }}/rentez-${{ matrix.service }}:${{ steps.tags.outputs.short }}
-            ${{ steps.ecr.outputs.registry }}/rentez-${{ matrix.service }}:${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/rentez-${{ matrix.service }}:${{ env.DEPLOY_SHA }}
           # GitHub's own cache, so the Maven dependency layer survives between
           # runs. Dockerfile.dev has no BuildKit cache mount of its own, so
           # without this every run re-resolves the whole tree, five times over.
           cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          # ignore-error: the cache is an optimisation. Without it, a cache
+          # write that GitHub refuses ("failed to reserve cache", seen when two
+          # runs built the same commit) fails a build whose image was fine.
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }},ignore-error=true
 
   # --------------------------------------------------------------- 2. deploy
   deploy:
@@ -249,6 +266,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4

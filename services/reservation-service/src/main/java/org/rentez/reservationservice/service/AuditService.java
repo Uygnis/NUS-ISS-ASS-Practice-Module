@@ -5,7 +5,6 @@ import org.rentez.reservationservice.repository.AuditLogRepository;
 import org.rentez.reservationservice.web.dto.AuditLogResponse;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
@@ -23,19 +22,22 @@ public class AuditService {
 	}
 
 	/**
-	 * Runs in its own transaction, on purpose.
+	 * Joins the caller's transaction (or opens one if there is none).
 	 *
-	 * <p>The monolith had no transactions at all, so an audit row committed
-	 * independently of the operation that triggered it. Now that the callers are
-	 * {@code @Transactional}, a plain call would join their transaction and be
-	 * rolled back with them - which would silently erase the trail for exactly
-	 * the failures worth auditing. {@code REQUIRES_NEW} preserves the old
-	 * behaviour deliberately rather than by omission.
+	 * <p>This was {@code REQUIRES_NEW}, so an audit row would survive its caller
+	 * rolling back. The cost was a SECOND pooled connection while the caller's
+	 * transaction still held its first - and with a pool of 3, three concurrent
+	 * bookings could each hold one connection and wait for another. Nothing then
+	 * moved until Hikari's timeout: the load test collapsed at 50 actions/s with
+	 * CPU under 1% (see docs/quality-attributes.md).
 	 *
-	 * <p>The same reasoning applies with more force in payment-service, where a
-	 * declined payment is persisted and audited and only then throws.
+	 * <p>Joining loses nothing here. Every caller audits as the last step of a
+	 * transaction that commits - including the declined-payment path, whose
+	 * transaction commits before the caller throws - so the audit row commits
+	 * with the change it describes, and a change that rolls back is not audited
+	 * as though it had happened.
 	 */
-	@Transactional(propagation = Propagation.REQUIRES_NEW)
+	@Transactional
 	public void log(String actorEmail, String action, String entityType, Long entityId, String details) {
 		auditLogRepository.save(new AuditLog(actorEmail, action, entityType, entityId, details));
 	}
