@@ -155,3 +155,6 @@ vite.config.ts.timestamp-*
 .secrets
 # perf/run.sh output - keep the ones you cite by copying them into docs/
 perf/results/
+
+# Archify scratch output (receipts, screenshots); diagram sources and HTML are tracked explicitly
+.archify/
