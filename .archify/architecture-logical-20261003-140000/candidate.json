@@ -1,0 +1,275 @@
+{
+ "schema_version": 1,
+ "diagram_type": "architecture",
+ "meta": {
+  "title": "Logical View: Bounded Contexts, Producers and Consumers",
+  "output": ".archify/architecture-logical-20261003-140000/logical.html",
+  "quality_profile": "showcase",
+  "locale": "en"
+ },
+ "components": [
+  {
+   "id": "staff",
+   "type": "external",
+   "label": "Staff / Admin",
+   "sublabel": "fleet producers",
+   "pos": [
+    40,
+    60
+   ],
+   "size": [
+    170,
+    64
+   ],
+   "tag": "producer"
+  },
+  {
+   "id": "customer",
+   "type": "external",
+   "label": "Customer",
+   "sublabel": "browse \u00b7 book \u00b7 pay",
+   "pos": [
+    40,
+    260
+   ],
+   "size": [
+    170,
+    64
+   ],
+   "tag": "consumer"
+  },
+  {
+   "id": "admin",
+   "type": "external",
+   "label": "Admin",
+   "sublabel": "users \u00b7 refunds \u00b7 reports",
+   "pos": [
+    910,
+    60
+   ],
+   "size": [
+    170,
+    64
+   ],
+   "tag": "operator"
+  },
+  {
+   "id": "fleet",
+   "type": "backend",
+   "label": "Fleet context",
+   "sublabel": "catalog \u00b7 Car, Maintenance",
+   "pos": [
+    330,
+    60
+   ],
+   "size": [
+    170,
+    64
+   ],
+   "tag": "calls nothing"
+  },
+  {
+   "id": "identity",
+   "type": "security",
+   "label": "Identity context",
+   "sublabel": "account \u00b7 User, Role, JWT",
+   "pos": [
+    620,
+    60
+   ],
+   "size": [
+    170,
+    64
+   ],
+   "tag": "no inbound calls"
+  },
+  {
+   "id": "booking",
+   "type": "backend",
+   "label": "Booking context",
+   "sublabel": "reservation \u00b7 Booking, BookingDay",
+   "pos": [
+    330,
+    260
+   ],
+   "size": [
+    170,
+    64
+   ]
+  },
+  {
+   "id": "payments",
+   "type": "backend",
+   "label": "Payments context",
+   "sublabel": "payment \u00b7 Payment, saga",
+   "pos": [
+    620,
+    260
+   ],
+   "size": [
+    170,
+    64
+   ]
+  },
+  {
+   "id": "notify",
+   "type": "messagebus",
+   "label": "Notification context",
+   "sublabel": "de-dup on event_id",
+   "pos": [
+    330,
+    440
+   ],
+   "size": [
+    170,
+    64
+   ],
+   "tag": "calls nothing"
+  }
+ ],
+ "boundaries": [
+  {
+   "kind": "region",
+   "label": "RentEZ platform \u00b7 one schema per context",
+   "wraps": [
+    "fleet",
+    "identity",
+    "booking",
+    "payments",
+    "notify"
+   ],
+   "pad": 22
+  }
+ ],
+ "connections": [
+  {
+   "from": "staff",
+   "to": "fleet",
+   "label": "publish cars",
+   "variant": "emphasis"
+  },
+  {
+   "from": "customer",
+   "to": "booking",
+   "label": "search, book",
+   "variant": "emphasis"
+  },
+  {
+   "from": "customer",
+   "to": "payments",
+   "label": "pay (Idempotency-Key)",
+   "variant": "emphasis",
+   "fromSide": "bottom",
+   "toSide": "right",
+   "via": [
+    [
+     125,
+     600
+    ],
+    [
+     850,
+     600
+    ],
+    [
+     850,
+     292
+    ]
+   ]
+  },
+  {
+   "from": "booking",
+   "to": "fleet",
+   "label": "car snapshot"
+  },
+  {
+   "from": "payments",
+   "to": "booking",
+   "label": "confirm/cancel"
+  },
+  {
+   "from": "payments",
+   "to": "notify",
+   "label": "domain events",
+   "variant": "dashed",
+   "fromSide": "bottom",
+   "toSide": "right",
+   "via": [
+    [
+     705,
+     472
+    ]
+   ]
+  },
+  {
+   "from": "booking",
+   "to": "notify",
+   "label": "domain events",
+   "variant": "dashed"
+  },
+  {
+   "from": "notify",
+   "to": "customer",
+   "label": "read notifications",
+   "variant": "dashed",
+   "fromSide": "left",
+   "toSide": "left",
+   "via": [
+    [
+     20,
+     472
+    ],
+    [
+     20,
+     292
+    ]
+   ]
+  },
+  {
+   "from": "admin",
+   "to": "identity",
+   "label": "manage users"
+  },
+  {
+   "from": "identity",
+   "to": "fleet",
+   "label": "stats",
+   "variant": "dashed"
+  },
+  {
+   "from": "identity",
+   "to": "payments",
+   "label": "stats (fail-soft)",
+   "variant": "dashed"
+  }
+ ],
+ "cards": [
+  {
+   "dot": "cyan",
+   "title": "Context relationships",
+   "items": [
+    "Identity publishes a language: JWT claims (role, userId), validated locally by every context",
+    "Fleet is an open host service; Booking snapshots car data as its anti-corruption layer",
+    "Payments and Booking are customer/supplier through idempotent confirm/cancel"
+   ]
+  },
+  {
+   "dot": "emerald",
+   "title": "Producers and consumers",
+   "items": [
+    "Producers: staff and admins publish fleet, status and maintenance; contexts publish domain events",
+    "Consumers: customers search, book and pay; Notification consumes events; the admin dashboard reads stats",
+    "Public APIs return DTOs only; /internal/** needs a SERVICE token and is blocked at the edge"
+   ]
+  },
+  {
+   "dot": "amber",
+   "title": "Rules that keep it a platform",
+   "items": [
+    "No cycles: availability lives in Booking, so Fleet calls nothing",
+    "Domain events go through a transactional outbox, at-least-once",
+    "Identity also reads Booking stats; any missing slice shows as partial, never zero",
+    "Admins also issue refunds through Payments"
+   ]
+  }
+ ]
+}

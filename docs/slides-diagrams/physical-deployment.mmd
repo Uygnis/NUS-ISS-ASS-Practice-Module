@@ -1,0 +1,9 @@
+flowchart TB
+    U([Browser]) --> CF[CloudFront]
+    CF -->|/| S3[(S3)]
+    CF -->|/api/*| ALB
+    subgraph VPC
+      ALB --> EKS["EKS · 2–5 spot nodes · Cluster Autoscaler<br/>account 2–4 · catalog 3–6 · reservation 2–10<br/>payment 2–4 · notification 1"]
+      EKS --> RDS[(RDS PostgreSQL 17)]
+    end
+    EKS -.-> SQS[/SQS+DLQ/] & SSM[SSM] & ECR[ECR] & CW[CloudWatch]

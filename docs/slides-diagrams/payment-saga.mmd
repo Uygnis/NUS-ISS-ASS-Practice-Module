@@ -1,0 +1,10 @@
+sequenceDiagram
+    Customer->>payment: POST /payments (Idempotency-Key)
+    payment->>payment: insert INITIATED
+    payment->>gateway: charge
+    payment->>payment: SUCCEEDED + outbox row
+    payment->>reservation: confirm (idempotent, retried)
+    alt confirm fails
+      payment->>payment: compensate (refund/cancel)
+    end
+    payment--)notification: outbox relay

@@ -1,0 +1,10 @@
+sequenceDiagram
+    Browser->>reservation: POST /bookings (JWT)
+    reservation->>reservation: validate JWT locally
+    reservation->>catalog: GET car (no transaction open)
+    reservation->>DB: insert booking + booking_day + outbox + audit (1 tx)
+    alt (car_id, day) collides
+      DB-->>Browser: 409 Conflict
+    end
+    Browser->>payment: POST /payments
+    payment->>reservation: confirm (SERVICE token)

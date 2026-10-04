@@ -1,0 +1,273 @@
+{
+ "schema_version": 1,
+ "diagram_type": "architecture",
+ "meta": {
+  "title": "Physical View: AWS Deployment and Cost Layers",
+  "output": ".archify/architecture-deployment-20261003-140000/deployment.html",
+  "quality_profile": "showcase",
+  "locale": "en"
+ },
+ "components": [
+  {
+   "id": "browser",
+   "type": "external",
+   "label": "Browser",
+   "sublabel": "React SPA",
+   "pos": [
+    40,
+    220
+   ],
+   "size": [
+    150,
+    64
+   ]
+  },
+  {
+   "id": "cdn",
+   "type": "cloud",
+   "label": "CloudFront",
+   "sublabel": "/ and /api/*, same origin",
+   "pos": [
+    300,
+    220
+   ],
+   "size": [
+    170,
+    64
+   ],
+   "tag": "persistent"
+  },
+  {
+   "id": "s3",
+   "type": "database",
+   "label": "S3",
+   "sublabel": "frontend bundle",
+   "pos": [
+    300,
+    400
+   ],
+   "size": [
+    170,
+    64
+   ],
+   "tag": "persistent"
+  },
+  {
+   "id": "alb",
+   "type": "security",
+   "label": "ALB",
+   "sublabel": "one IngressGroup \u00b7 /internal denied",
+   "pos": [
+    580,
+    220
+   ],
+   "size": [
+    170,
+    64
+   ],
+   "tag": "ephemeral"
+  },
+  {
+   "id": "eks",
+   "type": "backend",
+   "label": "EKS cluster",
+   "sublabel": "5 services \u00b7 HPA \u00b7 spot t3/m5.large",
+   "pos": [
+    860,
+    220
+   ],
+   "size": [
+    190,
+    64
+   ],
+   "tag": "ephemeral"
+  },
+  {
+   "id": "rds",
+   "type": "database",
+   "label": "RDS PostgreSQL 17",
+   "sublabel": "db.t4g.micro \u00b7 private subnets",
+   "pos": [
+    1160,
+    220
+   ],
+   "size": [
+    190,
+    64
+   ],
+   "tag": "ephemeral"
+  },
+  {
+   "id": "ssm",
+   "type": "security",
+   "label": "SSM Parameter Store",
+   "sublabel": "JWT + DB passwords",
+   "pos": [
+    870,
+    40
+   ],
+   "size": [
+    170,
+    64
+   ],
+   "tag": "persistent"
+  },
+  {
+   "id": "ecr",
+   "type": "cloud",
+   "label": "ECR",
+   "sublabel": "rentez-<service> images",
+   "pos": [
+    1160,
+    40
+   ],
+   "size": [
+    190,
+    64
+   ],
+   "tag": "persistent"
+  },
+  {
+   "id": "logs",
+   "type": "cloud",
+   "label": "CloudWatch Logs",
+   "sublabel": "group per env \u00b7 7 days",
+   "pos": [
+    860,
+    400
+   ],
+   "size": [
+    190,
+    64
+   ],
+   "tag": "persistent"
+  },
+  {
+   "id": "reaper",
+   "type": "cloud",
+   "label": "Lease Lambda",
+   "sublabel": "tears down at the deadline",
+   "pos": [
+    1160,
+    400
+   ],
+   "size": [
+    190,
+    64
+   ],
+   "tag": "persistent"
+  }
+ ],
+ "boundaries": [
+  {
+   "kind": "region",
+   "label": "AWS ap-southeast-1 \u00b7 one environment (dev and prod each get their own)",
+   "wraps": [
+    "cdn",
+    "s3",
+    "alb",
+    "eks",
+    "rds",
+    "ssm",
+    "ecr",
+    "logs",
+    "reaper"
+   ],
+   "pad": 26
+  },
+  {
+   "kind": "security-group",
+   "label": "VPC 10.42.0.0/16 \u00b7 ephemeral layer, make aws-up (~$0.21/h)",
+   "wraps": [
+    "alb",
+    "eks",
+    "rds"
+   ],
+   "pad": 14
+  }
+ ],
+ "connections": [
+  {
+   "from": "browser",
+   "to": "cdn",
+   "label": "HTTPS",
+   "variant": "emphasis"
+  },
+  {
+   "from": "cdn",
+   "to": "s3",
+   "label": "/"
+  },
+  {
+   "from": "cdn",
+   "to": "alb",
+   "label": "/api/*",
+   "variant": "emphasis"
+  },
+  {
+   "from": "alb",
+   "to": "eks",
+   "label": "path routes",
+   "variant": "emphasis"
+  },
+  {
+   "from": "eks",
+   "to": "rds",
+   "label": "SQL, pool 3",
+   "variant": "emphasis"
+  },
+  {
+   "from": "eks",
+   "to": "ssm",
+   "label": "read secrets",
+   "variant": "dashed"
+  },
+  {
+   "from": "eks",
+   "to": "ecr",
+   "label": "pull images",
+   "variant": "dashed"
+  },
+  {
+   "from": "eks",
+   "to": "logs",
+   "label": "Fluent Bit",
+   "variant": "dashed"
+  },
+  {
+   "from": "reaper",
+   "to": "rds",
+   "label": "delete on expiry",
+   "variant": "security"
+  }
+ ],
+ "cards": [
+  {
+   "dot": "cyan",
+   "title": "Key physical decisions",
+   "items": [
+    "CloudFront is the only public entry: no CORS, no certificate, no domain",
+    "One ALB for five services; spot nodes and no NAT gateway, about 70% cheaper",
+    "Cluster Autoscaler grows the node group from 2 to 5 when pods are Pending"
+   ]
+  },
+  {
+   "dot": "amber",
+   "title": "Two layers, two lifetimes",
+   "items": [
+    "Persistent (~$0.80/month): CloudFront, S3, ECR, SSM, SQS, DynamoDB, budgets",
+    "Ephemeral (~$0.21/hour): EKS, ALB, RDS, created daily by make aws-up",
+    "The lease Lambda deletes the ephemeral layer, so a forgotten cluster cannot run up a bill"
+   ]
+  },
+  {
+   "dot": "violet",
+   "title": "Two environments",
+   "items": [
+    "rentez-dev and rentez-prod: own cluster, namespace, URL, RDS and log group",
+    "Shared underneath: the VPC and the ECR repositories",
+    "make aws-up-dev / aws-up-prod; a bare make aws-up asks which"
+   ]
+  }
+ ]
+}

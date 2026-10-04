@@ -1,0 +1,213 @@
+{
+ "schema_version": 2,
+ "diagram_type": "workflow",
+ "meta": {
+  "title": "DevOps Pipeline: Branch to Running Pods",
+  "output": ".archify/workflow-cicd-20261003-140000/cicd.html",
+  "quality_profile": "showcase",
+  "locale": "en",
+  "viewBox": [
+   1080,
+   660
+  ]
+ },
+ "lanes": [
+  {
+   "id": "dev",
+   "label": "Source control"
+  },
+  {
+   "id": "ci",
+   "label": "Rentez CI (every push / PR)"
+  },
+  {
+   "id": "deploy",
+   "label": "Rentez Deploy (dev or main only)"
+  },
+  {
+   "id": "aws",
+   "label": "AWS environment"
+  }
+ ],
+ "phases": [
+  {
+   "id": "code",
+   "label": "Branch + review",
+   "fromCol": 0,
+   "toCol": 1
+  },
+  {
+   "id": "verify",
+   "label": "Test + scan",
+   "fromCol": 2,
+   "toCol": 3,
+   "variant": "emphasis"
+  },
+  {
+   "id": "ship",
+   "label": "Build + deploy",
+   "fromCol": 4,
+   "toCol": 5,
+   "variant": "dashed"
+  }
+ ],
+ "mainPath": [
+  "feature",
+  "pr",
+  "test",
+  "sast",
+  "build",
+  "helm",
+  "cluster"
+ ],
+ "nodes": [
+  {
+   "id": "feature",
+   "lane": "dev",
+   "col": 0,
+   "type": "external",
+   "label": "feature/** branch",
+   "sublabel": "from dev",
+   "width": 160
+  },
+  {
+   "id": "pr",
+   "lane": "dev",
+   "col": 1,
+   "type": "frontend",
+   "label": "Pull request",
+   "sublabel": "to dev, then dev to main",
+   "width": 160
+  },
+  {
+   "id": "test",
+   "lane": "ci",
+   "col": 2,
+   "type": "backend",
+   "label": "Test x5 services",
+   "sublabel": "mvnw verify + JaCoCo",
+   "tag": "SonarCloud",
+   "width": 160
+  },
+  {
+   "id": "sast",
+   "lane": "ci",
+   "col": 3,
+   "type": "security",
+   "label": "CodeQL + OWASP",
+   "sublabel": "SAST + SCA, blocking",
+   "width": 160
+  },
+  {
+   "id": "build",
+   "lane": "deploy",
+   "col": 4,
+   "type": "backend",
+   "label": "Build x5 images",
+   "sublabel": "dev.yml / prod.yml \u00b7 tested SHA",
+   "width": 160
+  },
+  {
+   "id": "ecr",
+   "lane": "aws",
+   "col": 4,
+   "type": "cloud",
+   "label": "ECR",
+   "sublabel": "short + full SHA tags",
+   "width": 160
+  },
+  {
+   "id": "helm",
+   "lane": "deploy",
+   "col": 5,
+   "type": "backend",
+   "label": "make aws-deploy",
+   "sublabel": "Helm x5 + S3 + CloudFront",
+   "width": 160
+  },
+  {
+   "id": "cluster",
+   "lane": "aws",
+   "col": 5,
+   "type": "cloud",
+   "label": "rentez-dev / -prod",
+   "sublabel": "EKS namespace",
+   "width": 160
+  }
+ ],
+ "edges": [
+  {
+   "id": "e1",
+   "from": "feature",
+   "to": "pr"
+  },
+  {
+   "id": "e2",
+   "from": "pr",
+   "to": "test",
+   "label": "push / PR",
+   "variant": "emphasis"
+  },
+  {
+   "id": "e3",
+   "from": "test",
+   "to": "sast"
+  },
+  {
+   "id": "e7",
+   "from": "build",
+   "to": "ecr",
+   "label": "push",
+   "variant": "dashed",
+   "role": "branch"
+  },
+  {
+   "id": "e8",
+   "from": "build",
+   "to": "helm"
+  },
+  {
+   "id": "e9",
+   "from": "helm",
+   "to": "cluster",
+   "label": "rollout",
+   "variant": "emphasis"
+  },
+  {
+   "id": "e5",
+   "from": "sast",
+   "to": "build",
+   "label": "success only",
+   "variant": "emphasis"
+  }
+ ],
+ "cards": [
+  {
+   "dot": "cyan",
+   "title": "Source and artifacts",
+   "items": [
+    "main is prod, dev is integration, feature/** is work; both protected by PR + green CI",
+    "sync-main.yml auto-PRs main into open feature branches; CODEOWNERS assigns reviewers",
+    "No shared library or parent POM: every service builds alone; images tagged by commit SHA"
+   ]
+  },
+  {
+   "dot": "emerald",
+   "title": "Procedures",
+   "items": [
+    "CI runs the same make aws-deploy a developer runs: no YAML reimplementation",
+    "make aws-up-<env> provisions (~20 min); aws-deploy ships code (~3 min); aws-down-<env> tears down",
+    "Preflight skips the deploy if the Environment has no AWS role configured"
+   ]
+  },
+  {
+   "dot": "rose",
+   "title": "Bugs the pipeline taught us",
+   "items": [
+    "Deploy Dev used to ship main's code: workflow_run's github.sha is the default branch",
+    "prod.yml briefly deployed even when CI was red",
+    "The frontend test step is still commented out; only the build runs"
+   ]
+  }
+ ]
+}

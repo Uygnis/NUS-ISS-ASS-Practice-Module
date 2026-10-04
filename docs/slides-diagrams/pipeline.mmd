@@ -1,0 +1,5 @@
+flowchart LR
+    P([push/PR]) --> T[Test ×5 + JaCoCo<br/>SonarCloud] --> S[CodeQL] --> O[OWASP]
+    O -->|dev| D1[Deploy Dev]
+    O -->|main| D2[Deploy Prod]
+    D1 & D2 --> B[Build ×5 → ECR] --> H[make aws-deploy<br/>Helm ×5 · S3 · CloudFront]

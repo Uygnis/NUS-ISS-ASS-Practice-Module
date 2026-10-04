@@ -1,0 +1,248 @@
+{
+ "schema_version": 1,
+ "diagram_type": "sequence",
+ "meta": {
+  "title": "Use Case: Customer Books and Pays for a Car",
+  "output": ".archify/sequence-book-and-pay-20261003-140000/book-and-pay.html",
+  "column_fit": "spread",
+  "quality_profile": "showcase",
+  "locale": "en"
+ },
+ "participants": [
+  {
+   "id": "customer",
+   "type": "frontend",
+   "label": "Customer SPA",
+   "sublabel": "via CloudFront + ALB"
+  },
+  {
+   "id": "reservation",
+   "type": "backend",
+   "label": "reservation",
+   "sublabel": "JWT checked locally"
+  },
+  {
+   "id": "catalog",
+   "type": "backend",
+   "label": "catalog",
+   "sublabel": "fleet owner"
+  },
+  {
+   "id": "payment",
+   "type": "backend",
+   "label": "payment",
+   "sublabel": "saga owner"
+  },
+  {
+   "id": "db",
+   "type": "database",
+   "label": "PostgreSQL",
+   "sublabel": "booking + payment schemas"
+  },
+  {
+   "id": "notification",
+   "type": "messagebus",
+   "label": "notification",
+   "sublabel": "event consumer"
+  }
+ ],
+ "segments": [
+  {
+   "from": 150,
+   "to": 340,
+   "label": "Book"
+  },
+  {
+   "from": 372,
+   "to": 630,
+   "label": "Pay (saga)"
+  },
+  {
+   "from": 662,
+   "to": 686,
+   "label": "Notify"
+  }
+ ],
+ "messages": [
+  {
+   "id": "create",
+   "from": "customer",
+   "to": "reservation",
+   "y": 160,
+   "label": "POST /bookings",
+   "variant": "emphasis"
+  },
+  {
+   "id": "car",
+   "from": "reservation",
+   "to": "catalog",
+   "y": 194,
+   "label": "GET internal car (no tx open)",
+   "variant": "default"
+  },
+  {
+   "id": "car-ret",
+   "from": "catalog",
+   "to": "reservation",
+   "y": 228,
+   "label": "make, model, daily rate",
+   "variant": "return"
+  },
+  {
+   "id": "insert",
+   "from": "reservation",
+   "to": "db",
+   "y": 262,
+   "label": "one tx: booking + booking_day + outbox",
+   "variant": "emphasis"
+  },
+  {
+   "id": "insert-ret",
+   "from": "db",
+   "to": "reservation",
+   "y": 296,
+   "label": "ok, or PK clash = 409",
+   "variant": "return"
+  },
+  {
+   "id": "created",
+   "from": "reservation",
+   "to": "customer",
+   "y": 330,
+   "label": "201 PENDING_PAYMENT",
+   "variant": "return"
+  },
+  {
+   "id": "pay",
+   "from": "customer",
+   "to": "payment",
+   "y": 382,
+   "label": "POST /payments + Idempotency-Key",
+   "variant": "emphasis"
+  },
+  {
+   "id": "get-booking",
+   "from": "payment",
+   "to": "reservation",
+   "y": 416,
+   "label": "GET internal booking",
+   "variant": "default"
+  },
+  {
+   "id": "booking-ret",
+   "from": "reservation",
+   "to": "payment",
+   "y": 450,
+   "label": "awaiting payment",
+   "variant": "return"
+  },
+  {
+   "id": "initiated",
+   "from": "payment",
+   "to": "db",
+   "y": 484,
+   "label": "insert INITIATED, before charging",
+   "variant": "security"
+  },
+  {
+   "id": "success",
+   "from": "payment",
+   "to": "db",
+   "y": 518,
+   "label": "SUCCESS + outbox row",
+   "variant": "default"
+  },
+  {
+   "id": "confirm",
+   "from": "payment",
+   "to": "reservation",
+   "y": 552,
+   "label": "POST internal confirm (idempotent)",
+   "variant": "emphasis"
+  },
+  {
+   "id": "confirm-ret",
+   "from": "reservation",
+   "to": "payment",
+   "y": 586,
+   "label": "CONFIRMED",
+   "variant": "return"
+  },
+  {
+   "id": "paid",
+   "from": "payment",
+   "to": "customer",
+   "y": 620,
+   "label": "201 SUCCESS",
+   "variant": "return"
+  },
+  {
+   "id": "relay",
+   "from": "payment",
+   "to": "notification",
+   "y": 672,
+   "label": "outbox relay, async",
+   "variant": "dashed"
+  }
+ ],
+ "activations": [
+  {
+   "participant": "reservation",
+   "from": 156,
+   "to": 334,
+   "type": "backend"
+  },
+  {
+   "participant": "catalog",
+   "from": 190,
+   "to": 232,
+   "type": "backend"
+  },
+  {
+   "participant": "payment",
+   "from": 378,
+   "to": 624,
+   "type": "backend"
+  },
+  {
+   "participant": "db",
+   "from": 258,
+   "to": 300,
+   "type": "database"
+  },
+  {
+   "participant": "db",
+   "from": 480,
+   "to": 522,
+   "type": "database"
+  }
+ ],
+ "cards": [
+  {
+   "dot": "rose",
+   "title": "Correctness",
+   "items": [
+    "Two customers racing for one car: the booking_day primary key lets exactly one win",
+    "Same Idempotency-Key replayed: the original payment comes back, no second charge",
+    "The payment row exists before the (mock, in-process) gateway is called"
+   ]
+  },
+  {
+   "dot": "amber",
+   "title": "When confirm fails",
+   "items": [
+    "Booking unconfirmable: payment compensates (refund) and cancels the booking",
+    "Timeout: the reconciliation sweeper retries confirm later; confirm is idempotent",
+    "Notification is off the request path: an outage cannot fail a booking"
+   ]
+  },
+  {
+   "dot": "cyan",
+   "title": "Why this use case",
+   "items": [
+    "It exercises local JWT, a cross-service read, the snapshot, DB-enforced concurrency, the saga, idempotency and the outbox",
+    "No DB connection is held across an HTTP call: the fix that took load from under 50 to over 400 actions/s"
+   ]
+  }
+ ]
+}

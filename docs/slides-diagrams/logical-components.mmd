@@ -1,0 +1,7 @@
+flowchart LR
+    GW["API edge"] --> ACC[account] & CAT[catalog] & RES[reservation] & PAY[payment] & NOT[notification]
+    RES -->|car details| CAT
+    PAY -->|confirm/cancel| RES
+    ACC -.->|stats, fail-soft| CAT & RES & PAY
+    RES -.->|outbox| NOT
+    PAY -.->|outbox| NOT

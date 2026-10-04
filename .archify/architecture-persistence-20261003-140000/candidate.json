@@ -1,0 +1,37 @@
+{
+  "schema_version": 1, "diagram_type": "architecture",
+  "meta": { "title": "Persistence Design: Schema per Service", "output": ".archify/architecture-persistence-20261003-140000/persistence.html", "quality_profile": "showcase", "locale": "en" },
+  "components": [
+    { "id": "app_user", "type": "database", "label": "app_user", "sublabel": "BCrypt hash · role", "pos": [40, 60], "size": [170, 64] },
+    { "id": "car", "type": "database", "label": "car", "sublabel": "status · daily_rate", "pos": [330, 60], "size": [170, 64] },
+    { "id": "maint", "type": "database", "label": "maintenance_record", "sublabel": "flips car status, same tx", "pos": [330, 220], "size": [170, 64] },
+    { "id": "booking", "type": "database", "label": "booking", "sublabel": "car_make/model/rate snapshot", "pos": [620, 60], "size": [170, 64] },
+    { "id": "booking_day", "type": "database", "label": "booking_day", "sublabel": "PK (car_id, day)", "pos": [620, 220], "size": [170, 64], "tag": "no double-booking" },
+    { "id": "res_outbox", "type": "messagebus", "label": "outbox_event", "sublabel": "written in the booking tx", "pos": [620, 380], "size": [170, 64] },
+    { "id": "payment", "type": "database", "label": "payment", "sublabel": "UNIQUE idempotency_key", "pos": [910, 60], "size": [170, 64], "tag": "one success per booking" },
+    { "id": "pay_outbox", "type": "messagebus", "label": "outbox_event", "sublabel": "written in the payment tx", "pos": [910, 380], "size": [170, 64] },
+    { "id": "notification", "type": "database", "label": "notification", "sublabel": "UNIQUE event_id", "pos": [1200, 380], "size": [170, 64] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "RDS PostgreSQL 17 · one instance per environment · Flyway owns every schema", "wraps": ["app_user", "car", "maint", "booking", "booking_day", "res_outbox", "payment", "pay_outbox", "notification"], "pad": 30 },
+    { "kind": "security-group", "label": "rentez_auth", "wraps": ["app_user"], "pad": 12 },
+    { "kind": "security-group", "label": "rentez_fleet", "wraps": ["car", "maint"], "pad": 12 },
+    { "kind": "security-group", "label": "rentez_booking", "wraps": ["booking", "booking_day", "res_outbox"], "pad": 12 },
+    { "kind": "security-group", "label": "rentez_payment", "wraps": ["payment", "pay_outbox"], "pad": 12 },
+    { "kind": "security-group", "label": "rentez_notification", "wraps": ["notification"], "pad": 12 }
+  ],
+  "connections": [
+    { "from": "maint", "to": "car", "label": "FK car_id" },
+    { "from": "booking_day", "to": "booking", "label": "FK booking_id" },
+    { "from": "booking", "to": "car", "label": "car_id, no FK", "variant": "dashed" },
+    { "from": "payment", "to": "booking", "label": "booking_id, no FK", "variant": "dashed" },
+    { "from": "payment", "to": "pay_outbox", "label": "same tx" },
+    { "from": "pay_outbox", "to": "notification", "label": "relay", "variant": "dashed" },
+    { "from": "res_outbox", "to": "notification", "label": "relay (HTTP, at-least-once)", "variant": "dashed", "fromSide": "bottom", "toSide": "bottom", "via": [[705, 520], [1285, 520]] }
+  ],
+  "cards": [
+    { "dot": "rose", "title": "Invariants the database enforces", "items": ["booking_day primary key (car_id, day): a second booking for the same day is rejected", "payment.idempotency_key UNIQUE: a retried request returns the original payment", "Generated succeeded_booking_id + UNIQUE: unlimited declines, at most one success"] },
+    { "dot": "cyan", "title": "Isolation", "items": ["Five schemas, five roles, no cross-schema grants (make db-isolation proves it)", "Foreign keys inside a schema; plain ids across schemas", "Each schema also has an audit_log table, written in the caller's transaction"] },
+    { "dot": "amber", "title": "Conventions", "items": ["ddl-auto=validate; migrations are never edited once applied", "Hikari pool of 3 per pod, 2 s timeout: 25 pods x 3 stays under the instance limit", "DynamoDB tables (sessions, availability, audit) are provisioned but unused"] }
+  ]
+}

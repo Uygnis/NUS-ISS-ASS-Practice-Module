@@ -1,0 +1,479 @@
+{
+ "schema_version": 1,
+ "diagram_type": "architecture",
+ "meta": {
+  "title": "RentEZ System Architecture on AWS",
+  "output": ".archify/architecture-rentez-20261003-120000/rentez.html",
+  "quality_profile": "standard",
+  "locale": "en",
+  "repository": {
+   "url": "https://github.com/Uygnis/NUS-ISS-ASS-Practice-Module.git",
+   "provider": "github",
+   "link_mode": "web",
+   "revision": "9a3f6040fb775d0d72cfac4209a011b5f2485322"
+  }
+ },
+ "components": [
+  {
+   "id": "browser",
+   "type": "external",
+   "label": "Browser",
+   "sublabel": "React SPA",
+   "pos": [
+    20,
+    60
+   ],
+   "size": [
+    140,
+    64
+   ],
+   "sources": [
+    {
+     "path": "frontend/src/pages/BookingsPage.jsx",
+     "label": "SPA page"
+    }
+   ]
+  },
+  {
+   "id": "cdn",
+   "type": "cloud",
+   "label": "CloudFront",
+   "sublabel": "sole public entry",
+   "pos": [
+    210,
+    60
+   ],
+   "size": [
+    150,
+    64
+   ],
+   "sources": [
+    {
+     "path": "aws/cloudformation/10-persistent.yaml",
+     "line": 445,
+     "end_line": 490,
+     "label": "distribution + /api/* behaviour"
+    }
+   ]
+  },
+  {
+   "id": "s3",
+   "type": "database",
+   "label": "S3",
+   "sublabel": "frontend bundle",
+   "pos": [
+    210,
+    240
+   ],
+   "size": [
+    150,
+    64
+   ],
+   "sources": [
+    {
+     "path": "aws/cloudformation/10-persistent.yaml",
+     "line": 457,
+     "end_line": 460,
+     "label": "S3 origin"
+    }
+   ]
+  },
+  {
+   "id": "alb",
+   "type": "security",
+   "label": "ALB (IngressGroup rentez)",
+   "sublabel": "routes /api/<service> \u00b7 denies /internal/*",
+   "pos": [
+    430,
+    210
+   ],
+   "size": [
+    1240,
+    64
+   ],
+   "sources": [
+    {
+     "path": "deploy/k8s/00-internal-deny.yaml",
+     "line": 1,
+     "end_line": 50,
+     "label": "internal deny rule"
+    },
+    {
+     "path": "deploy/helm/values/reservation.yaml",
+     "line": 23,
+     "label": "ingress path"
+    }
+   ]
+  },
+  {
+   "id": "account",
+   "type": "backend",
+   "label": "account-service",
+   "sublabel": "auth \u00b7 JWT \u00b7 admin dashboard",
+   "pos": [
+    430,
+    380
+   ],
+   "size": [
+    170,
+    64
+   ],
+   "tag": "HPA 2\u20134",
+   "sources": [
+    {
+     "path": "deploy/helm/values/account.yaml",
+     "line": 19,
+     "end_line": 25,
+     "label": "path + HPA"
+    },
+    {
+     "path": "services/account-service/src/main/java/org/rentez/accountservice/client/StatsClient.java",
+     "line": 78,
+     "end_line": 86,
+     "label": "fail-soft stats"
+    }
+   ]
+  },
+  {
+   "id": "catalog",
+   "type": "backend",
+   "label": "catalog-service",
+   "sublabel": "fleet \u00b7 maintenance",
+   "pos": [
+    700,
+    380
+   ],
+   "size": [
+    170,
+    64
+   ],
+   "tag": "HPA 3\u20136",
+   "sources": [
+    {
+     "path": "deploy/helm/values/catalog.yaml",
+     "line": 21,
+     "end_line": 34,
+     "label": "path + HPA"
+    }
+   ]
+  },
+  {
+   "id": "reservation",
+   "type": "backend",
+   "label": "reservation-service",
+   "sublabel": "bookings \u00b7 availability",
+   "pos": [
+    970,
+    380
+   ],
+   "size": [
+    170,
+    64
+   ],
+   "tag": "HPA 2\u201310",
+   "sources": [
+    {
+     "path": "deploy/helm/values/reservation.yaml",
+     "line": 23,
+     "end_line": 29,
+     "label": "path + HPA"
+    },
+    {
+     "path": "services/reservation-service/src/main/java/org/rentez/reservationservice/client/CatalogClient.java",
+     "line": 48,
+     "end_line": 49,
+     "label": "calls catalog"
+    },
+    {
+     "path": "services/reservation-service/src/main/java/org/rentez/reservationservice/service/OutboxRelayScheduler.java",
+     "line": 26,
+     "label": "outbox relay"
+    }
+   ]
+  },
+  {
+   "id": "payment",
+   "type": "backend",
+   "label": "payment-service",
+   "sublabel": "payments \u00b7 saga \u00b7 refunds",
+   "pos": [
+    1240,
+    380
+   ],
+   "size": [
+    170,
+    64
+   ],
+   "tag": "HPA 2\u20134",
+   "sources": [
+    {
+     "path": "deploy/helm/values/payment.yaml",
+     "line": 19,
+     "end_line": 25,
+     "label": "path + HPA"
+    },
+    {
+     "path": "services/payment-service/src/main/java/org/rentez/paymentservice/client/ReservationClient.java",
+     "line": 75,
+     "end_line": 97,
+     "label": "confirm / cancel"
+    },
+    {
+     "path": "services/payment-service/src/main/java/org/rentez/paymentservice/client/NotificationClient.java",
+     "line": 46,
+     "end_line": 47,
+     "label": "outbox delivery"
+    }
+   ]
+  },
+  {
+   "id": "notification",
+   "type": "backend",
+   "label": "notification-service",
+   "sublabel": "de-dup on event_id",
+   "pos": [
+    1500,
+    380
+   ],
+   "size": [
+    170,
+    64
+   ],
+   "tag": "1 pod, no HPA",
+   "sources": [
+    {
+     "path": "deploy/helm/values/notification.yaml",
+     "line": 41,
+     "label": "public path"
+    },
+    {
+     "path": "services/notification-service/src/main/resources/db/migration/V1__init.sql",
+     "line": 26,
+     "label": "event_id"
+    }
+   ]
+  },
+  {
+   "id": "rds",
+   "type": "database",
+   "label": "RDS PostgreSQL 17",
+   "sublabel": "one instance per environment \u00b7 5 schemas, 5 roles, no cross-schema grants",
+   "pos": [
+    430,
+    720
+   ],
+   "size": [
+    1240,
+    64
+   ],
+   "sources": [
+    {
+     "path": "aws/cloudformation/20-database.yaml",
+     "line": 77,
+     "end_line": 91,
+     "label": "DB instance"
+    },
+    {
+     "path": "services/reservation-service/src/main/resources/db/migration/V1__init.sql",
+     "line": 83,
+     "end_line": 87,
+     "label": "booking_day PK"
+    },
+    {
+     "path": "services/payment-service/src/main/resources/db/migration/V1__init.sql",
+     "line": 51,
+     "label": "idempotency key"
+    }
+   ]
+  }
+ ],
+ "boundaries": [
+  {
+   "kind": "region",
+   "label": "AWS ap-southeast-1 \u00b7 one environment (dev or prod)",
+   "wraps": [
+    "cdn",
+    "s3",
+    "alb",
+    "account",
+    "catalog",
+    "reservation",
+    "payment",
+    "notification",
+    "rds"
+   ],
+   "pad": 24
+  },
+  {
+   "kind": "security-group",
+   "label": "EKS \u00b7 2\u20135 spot nodes \u00b7 Cluster Autoscaler",
+   "wraps": [
+    "account",
+    "catalog",
+    "reservation",
+    "payment",
+    "notification"
+   ],
+   "pad": 16
+  }
+ ],
+ "connections": [
+  {
+   "from": "browser",
+   "to": "cdn",
+   "label": "HTTPS",
+   "variant": "emphasis"
+  },
+  {
+   "from": "cdn",
+   "to": "s3",
+   "label": "/",
+   "route": "straight",
+   "labelAt": [
+    300,
+    182
+   ]
+  },
+  {
+   "from": "cdn",
+   "to": "alb",
+   "label": "/api/*",
+   "variant": "emphasis"
+  },
+  {
+   "from": "alb",
+   "to": "account"
+  },
+  {
+   "from": "alb",
+   "to": "catalog"
+  },
+  {
+   "from": "alb",
+   "to": "reservation",
+   "variant": "emphasis"
+  },
+  {
+   "from": "alb",
+   "to": "payment"
+  },
+  {
+   "from": "alb",
+   "to": "notification"
+  },
+  {
+   "from": "account",
+   "to": "catalog",
+   "label": "stats",
+   "variant": "dashed"
+  },
+  {
+   "from": "reservation",
+   "to": "catalog",
+   "label": "car details"
+  },
+  {
+   "from": "payment",
+   "to": "reservation",
+   "label": "confirm/cancel",
+   "variant": "emphasis"
+  },
+  {
+   "from": "payment",
+   "to": "notification",
+   "label": "outbox events",
+   "variant": "dashed"
+  },
+  {
+   "from": "reservation",
+   "to": "notification",
+   "label": "outbox events",
+   "variant": "dashed",
+   "fromSide": "bottom",
+   "toSide": "bottom",
+   "via": [
+    [
+     1055,
+     540
+    ],
+    [
+     1585,
+     540
+    ]
+   ]
+  },
+  {
+   "from": "account",
+   "to": "rds",
+   "label": "rentez_auth",
+   "labelAt": [
+    515.0,
+    630
+   ]
+  },
+  {
+   "from": "catalog",
+   "to": "rds",
+   "label": "rentez_fleet",
+   "labelAt": [
+    785.0,
+    630
+   ]
+  },
+  {
+   "from": "reservation",
+   "to": "rds",
+   "label": "rentez_booking",
+   "labelAt": [
+    1055.0,
+    630
+   ]
+  },
+  {
+   "from": "payment",
+   "to": "rds",
+   "label": "rentez_payment",
+   "labelAt": [
+    1325.0,
+    630
+   ]
+  },
+  {
+   "from": "notification",
+   "to": "rds",
+   "label": "rentez_notification",
+   "labelAt": [
+    1585.0,
+    630
+   ]
+  }
+ ],
+ "cards": [
+  {
+   "dot": "cyan",
+   "title": "Dependency rules",
+   "items": [
+    "catalog and notification call nothing",
+    "Nothing calls account at runtime: JWTs are validated locally",
+    "account also reads reservation and payment stats, fail-soft (partial: true)"
+   ]
+  },
+  {
+   "dot": "rose",
+   "title": "Correctness in the database",
+   "items": [
+    "booking_day (car_id, day) primary key blocks double-booking",
+    "Unique idempotency_key makes payment retries safe",
+    "Outbox rows commit with the business change; relay delivers over HTTP"
+   ]
+  },
+  {
+   "dot": "amber",
+   "title": "Provisioned, not yet on the path",
+   "items": [
+    "SQS booking-events + DLQ: outbox is broker-ready, sink is HTTP today",
+    "DynamoDB sessions / availability / audit tables are unused"
+   ]
+  }
+ ]
+}
