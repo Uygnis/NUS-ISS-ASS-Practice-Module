@@ -1,6 +1,6 @@
 import { useMemo } from "react";
-import { useConfig } from "../context/ConfigContext";
-import { useAuth } from "../context/AuthContext";
+import { useConfig } from "../context/useConfig";
+import { useAuth } from "../context/useAuth";
 import { createAccountsApi } from "./accounts";
 import { createCatalogApi } from "./catalog";
 import { createReservationsApi } from "./reservations";

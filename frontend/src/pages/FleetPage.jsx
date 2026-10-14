@@ -1,18 +1,8 @@
 import { useEffect, useState } from "react";
 import { useApi } from "../api/useApi";
 import { CAR_TYPES } from "../api/catalog";
-import {
-  Message,
-  Empty,
-  StatusPill,
-  fmtMoney,
-  fmtDate,
-  CAR_STATUS_CLASS,
-  MAINT_STATUS_CLASS,
-  todayISO,
-  FieldError,
-  fieldClass,
-} from "../components/ui";
+import { Message, Empty, Skeleton, StatusPill, FieldError } from "../components/ui";
+import { fmtMoney, fmtDate, CAR_STATUS_CLASS, MAINT_STATUS_CLASS, todayISO, fieldClass } from "../components/format";
 
 const SUBS = [
   { id: "cars", label: "Cars" },
@@ -39,7 +29,6 @@ export default function FleetPage() {
       {sub === "cars" && <CarsPanel />}
       {sub === "add" && <AddCarPanel />}
       {sub === "maint" && <MaintenancePanel />}
-      {sub === "stats" && <StatsPanel />}
     </>
   );
 }
@@ -51,18 +40,26 @@ function CarsPanel() {
   const [cars, setCars] = useState(null);
   const [err, setErr] = useState("");
 
-  async function load() {
-    setErr("");
-    try {
-      const list = await api.catalog.searchAll(location, type);
-      setCars(list);
-    } catch (e) {
-      setErr(e.message);
-    }
-  }
+  // Filters apply when Filter is pressed, not on every keystroke.
+  const [applied, setApplied] = useState({ location: "", type: "", n: 0 });
+  const load = () => setApplied((a) => ({ location, type, n: a.n + 1 }));
+
   useEffect(() => {
-    load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */
-  }, []);
+    let active = true;
+    api.catalog
+      .searchAll(applied.location, applied.type)
+      .then((data) => {
+        if (!active) return;
+        setErr("");
+        setCars(data);
+      })
+      .catch((e) => {
+        if (active) setErr(e.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [api, applied]);
 
   async function setStatus(id, status) {
     if (!status) return;
@@ -113,9 +110,9 @@ function CarsPanel() {
       </div>
       <Message text={err} kind="err" />
       {cars === null ? (
-        <div className="hint">Loading…</div>
+        <Skeleton rows={4} />
       ) : cars.length === 0 ? (
-        <Empty>No cars found.</Empty>
+        <Empty>No cars match these filters.</Empty>
       ) : (
         <table>
           <thead>
@@ -307,7 +304,8 @@ function MaintenancePanel() {
       .searchAll("", "")
       .then(setCars)
       .catch((e) => setMsg({ text: e.message, kind: "err" }));
-    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+   
+   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function carLabel(id) {

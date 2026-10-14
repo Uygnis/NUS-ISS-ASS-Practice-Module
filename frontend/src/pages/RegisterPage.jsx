@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/useAuth';
 import { useApi } from '../api/useApi';
-import { FieldError, fieldClass, PasswordInput } from '../components/ui';
+import { FieldError, PasswordInput } from '../components/ui';
+import { fieldClass } from '../components/format';
 
 export default function RegisterPage() {
   const { login } = useAuth();

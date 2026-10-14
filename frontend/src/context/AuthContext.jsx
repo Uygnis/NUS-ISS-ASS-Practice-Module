@@ -1,6 +1,6 @@
-import { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect } from 'react';
+import { AuthContext } from './useAuth';
 
-const AuthContext = createContext(null);
 const STORAGE_KEY = 'rentez_auth';
 
 function loadAuth() {
@@ -56,10 +56,4 @@ export function AuthProvider({ children }) {
       {children}
     </AuthContext.Provider>
   );
-}
-
-export function useAuth() {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
-  return ctx;
 }

@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { useAuth } from "../context/AuthContext";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { useAuth } from "../context/useAuth";
 import { useApi } from "../api/useApi";
-import ConfigPanel from "./ConfigPanel";
 
 const TABS = [
   { to: "/browse", label: "Browse & book", roles: ["CUSTOMER"] },
@@ -24,6 +23,13 @@ export default function Layout() {
   const api = useApi();
   const navigate = useNavigate();
   const [unread, setUnread] = useState(0);
+  const { pathname } = useLocation();
+
+  // A new page starts at the top. Without this, booking a car from far down
+  // Browse landed on My bookings scrolled past the "created" notice.
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [pathname]);
 
   useEffect(() => {
     let cancelled = false;
@@ -39,9 +45,11 @@ export default function Layout() {
     }
     poll();
     const id = setInterval(poll, 30000);
+    window.addEventListener("rentez:notifications-changed", poll);
     return () => {
       cancelled = true;
       clearInterval(id);
+      window.removeEventListener("rentez:notifications-changed", poll);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth?.token]);
@@ -82,7 +90,6 @@ export default function Layout() {
       <main>
         <Outlet />
       </main>
-      <ConfigPanel />
     </div>
   );
 }

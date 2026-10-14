@@ -24,8 +24,8 @@ Legend: 🐞 bug · ✨ enhancement · Priority **P1** (do first) / **P2** / **P
 | B7 ✅ | `PaymentsPage.jsx` | Booking ID is free text. Users have to remember IDs. | Use a dropdown of the user's `PENDING_PAYMENT` bookings, labelled with car, dates and amount. Keep the preselect from the "Pay" button. | P1 |
 | B8 ✅ | `PaymentsPage.jsx` | The Pay button has no busy state, so a double-click sends two requests. Idempotency prevents a double charge, but the user still sees a confusing error. | Disable the button while the request runs and show "Processing…". | P1 |
 | B9 ✅ | `FleetPage.jsx` `CarsPanel.load` | A leftover `console.log(list)` is still in the code. | Remove it. | P3 |
-| B10 | `ProfilePage.jsx` | After a save error, the earlier "Profile updated." message stays on screen. Also, the error message renders above the form while the success message renders below it. | Clear both messages on save and render them in the same place. | P3 |
-| B11 | `NotificationsPage.jsx` | `sentAt` is a raw ISO timestamp. | Show it as a relative time ("5 min ago"), with the full time in a tooltip. | P2 |
+| B10 ✅ | `ProfilePage.jsx` | After a save error, the earlier "Profile updated." message stays on screen. Also, the error message renders above the form while the success message renders below it. | Clear both messages on save and render them in the same place. | P3 |
+| B11 ✅ | `NotificationsPage.jsx` | `sentAt` is a raw ISO timestamp. | Show it as a relative time ("5 min ago"), with the full time in a tooltip. | P2 |
 | B12 ✅ | Every `GlobalExceptionHandler` | There is no catch-all handler. Unexpected exceptions return Spring's default body, which the UI shows as "Request failed (500)", and nothing useful is logged. | Add an `@ExceptionHandler(Exception.class)` that logs the stack trace at ERROR and returns "Something went wrong on our side. Please try again." | P1 |
 
 ## 2. Meaningful error messages
@@ -59,15 +59,15 @@ Legend: 🐞 bug · ✨ enhancement · Priority **P1** (do first) / **P2** / **P
 
 | # | Where | Enhancement |
 |---|---|---|
-| C1 | `.carcard` (Browse) | Add a **car image** header, built from local SVG silhouettes chosen by `type` (SEDAN, SUV, HATCHBACK, …) and stored in `frontend/src/assets/cars/`. This needs no backend or schema change. Use the year and location as small chips. Lay the rate and button out on one row. |
-| C2 | `.carcard` | Add a hover lift (shadow) and a visible `:focus-within` outline so keyboard users can see which card is selected. |
-| C3 | Browse results | Add a result count ("12 cars available 14–16 Oct") and sort options (price ↑/↓, year). |
-| C4 | Bookings table | Show a card layout on narrow screens (< 640px). Explain disabled actions with a tooltip ("Paid bookings can't be modified"). |
-| C5 | Bookings | Add a "Pay now" button on the green success notice after a booking is created, linking straight to the payment step. |
-| C6 | Notifications | Add an unread badge count in the `Layout` nav, a "Mark all read" button, and an icon for each type. |
-| C7 | Empty states | Give each empty state a small illustration and a call-to-action button, e.g. "No bookings yet → Browse cars". |
-| C8 | Loading states | Replace the "Loading…" text with skeleton rows or cards using `--steel-light`. |
-| C9 | Messages | Make success messages disappear after about 4 seconds and give them a close button. Keep error messages until the user closes them. |
+| C1 ✅ | `.carcard` (Browse) | Add a **car image** header, built from local SVG silhouettes chosen by `type` (SEDAN, SUV, HATCHBACK, …) and stored in `frontend/src/assets/cars/`. This needs no backend or schema change. Use the year and location as small chips. Lay the rate and button out on one row. |
+| C2 ✅ | `.carcard` | Add a hover lift (shadow) and a visible `:focus-within` outline so keyboard users can see which card is selected. |
+| C3 ✅ | Browse results | Add a result count ("12 cars available 14–16 Oct") and sort options (price ↑/↓, year). |
+| C4 ✅ | Bookings table | Show a card layout on narrow screens (< 640px). Explain disabled actions with a tooltip ("Paid bookings can't be modified"). |
+| C5 ✅ | Bookings | Add a "Pay now" button on the green success notice after a booking is created, linking straight to the payment step. |
+| C6 ✅ | Notifications | Add an unread badge count in the `Layout` nav, a "Mark all read" button, and an icon for each type. |
+| C7 ✅ | Empty states | Give each empty state a small illustration and a call-to-action button, e.g. "No bookings yet → Browse cars". |
+| C8 ✅ | Loading states | Replace the "Loading…" text with skeleton rows or cards using `--steel-light`. |
+| C9 ✅ | Messages | Make success messages disappear after about 4 seconds and give them a close button. Keep error messages until the user closes them. |
 
 ## 5. Backend logging (CloudWatch via stdout)
 
@@ -108,6 +108,18 @@ Today, only 8 classes log anything (DataSeeder, Outbox dispatchers, PaymentServi
   - **Maintenance:** a description hint and a busy state.
   - **Profile:** phone is `type="tel"`, and Save stays disabled until something changes.
   - **My bookings:** the Modify row is now a real form, so Enter saves. It has a busy state, a success notice, and shows errors inside the row (this also closes B5).
+- **C1–C9 (cards and layout).**
+  - **C1–C3 Browse:** each card has an inline-SVG silhouette for its type (`components/CarArt.jsx`, palette tokens only, no image files), year and location chips, and the price and button on one row. Cards lift on hover and show a focus outline. A result count reads "5 cars available 20 Dec – 22 Dec", and the results can be sorted by price or year. The "Book this car" label is unchanged, because the demo script clicks it.
+  - **C4 My bookings:** below 640px wide the table becomes stacked cards (`table.stack`). Disabled actions explain why in a tooltip.
+  - **C5:** the "created" notice stays on screen with a **Pay now** button that opens Payments with the booking selected.
+  - **C6 Notifications:** a tone and icon per event type, readable titles, relative times ("34 min ago"), and Mark all read. The nav badge refreshes immediately, through a `rentez:notifications-changed` event.
+  - **C7:** empty states have an illustration, and a "Browse cars" button where useful.
+  - **C8:** shimmer skeletons replace "Loading…" on every page, with no animation when reduced motion is set.
+  - **C9:** success messages close after 4 seconds; errors stay. Both have a × button.
+- **Found while re-testing the lint fixes (backend bug, also on `main`):** Fleet → Cars with a type but no location returned 500 `function lower(bytea) does not exist`. `CarRepository.findByFiltersNotStatus` was missing the `cast(:location as String)` that `findByFilters` already had. It is fixed, with a regression test (`staffFleetListFiltersByTypeWithoutALocation`, run on Testcontainers Postgres). The new error logging pinpointed it from a single request.
+- **Removed the "Service URLs / GATEWAY" footer** (`ConfigPanel.jsx`). It was a developer override for the gateway URL, saved in localStorage, with no use for customers. The gateway now always comes from `public/config.js` (set at deploy time), and any old saved override is cleared on load, so it can't silently send requests to the wrong place.
+- **Found during C5:** pages opened at the previous page's scroll position, so the booking notice was off-screen. `Layout` now scrolls to the top whenever the page changes.
+- **B11/B10.** Covered by C6 (relative times) and the earlier Profile changes (one message area, cleared on save).
 - **B8.** `perf/demo/record-usecases.js` use case 3 double-clicks "Pay" to demonstrate idempotency. The button now disables after the first click, so re-record that clip or send the second request through the API.
 
 ### Verification (2026-10-15, local `make up` stack)
@@ -119,8 +131,12 @@ Today, only 8 classes log anything (DataSeeder, Outbox dispatchers, PaymentServi
   - **Customer:** search with past dates is blocked; the booking form scrolls into view with the car name and a price summary; the payment form shows a booking dropdown, the card field only for cards, card number formatting and validation, and a success message.
   - **Staff:** both maintenance car dropdowns work, and choosing a car loads its history straight away.
 - **Form fields in the browser:** the Register password toggle and confirm mismatch; login autofocus; Browse restoring a search from the URL, location suggestions and Clear; Profile Save enabling and disabling; and Modify saving on Enter (re-priced 4 → 5 days, $260 → $325).
+- **Cards and layout in the browser:** car art and sorting; booking showing the sticky notice, with Pay now preselecting the booking; notification icons and Mark all read clearing the badge; bookings as stacked cards at 375px wide with no sideways scroll; a success message closing after 4 seconds. Smoke test still 33/33.
 - **Not yet clicked through:** scheduling maintenance, and the Add car limits. Both are covered by the build only.
-- The frontend lint count went from 21 to 24 errors: the new helpers in `ui.jsx` follow the file's existing pattern. CI does not run lint.
+- **Frontend lint is clean:** `npx eslint src` reports 0 errors and 0 warnings, down from 21 errors on `main` and 25 mid-branch.
+  - **Fast Refresh:** `ui.jsx` exports only components; constants and formatting helpers moved to `components/format.js`. The context hooks moved out of the provider files into `context/useAuth.js` and `context/useConfig.js`. They are named that way because macOS treats `authContext.js` and `AuthContext.jsx` as the same file.
+  - **set-state-in-effect:** each page now fetches inside its effect, using `.then` with an `active` cleanup flag, so a stale response is ignored. `load()` just bumps a reload counter, so existing callers are unchanged. Browse runs its search from a `query` state seeded from the URL, and the Bookings "created" notice is seeded from the navigation state.
+  - **Leftovers:** the dead `StatsPanel` reference and an unused assignment in `ConfigContext` were removed.
 
 ## Suggested order of work
 

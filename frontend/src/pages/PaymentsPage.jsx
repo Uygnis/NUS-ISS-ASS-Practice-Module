@@ -1,14 +1,19 @@
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useApi } from '../api/useApi';
-import { Message, Empty, StatusPill, fmtMoney, fmtDate, PAYMENT_STATUS_CLASS, CONFIRM_STATE_CLASS } from '../components/ui';
+import { Message, Empty, Skeleton, StatusPill } from '../components/ui';
+import { fmtMoney, fmtDate, PAYMENT_STATUS_CLASS, CONFIRM_STATE_CLASS } from '../components/format';
 
 // Only PENDING_PAYMENT can be paid (payment-service BookingView.isAwaitingPayment);
 // a MODIFIED booking was already paid before it changed.
 const PAYABLE = (b) => b.status === 'PENDING_PAYMENT';
 
-function bookingLabel(b) {
-  return `${b.carMake} ${b.carModel} · ${fmtDate(b.startDate)} → ${fmtDate(b.endDate)} · ${fmtMoney(b.totalAmount)}`;
+// Just the car. Dates are added only when two payable bookings share a car,
+// so the options can still be told apart.
+function bookingLabel(b, all) {
+  const car = `${b.carMake} ${b.carModel}`;
+  const twins = all.filter((x) => `${x.carMake} ${x.carModel}` === car).length > 1;
+  return twins ? `${car} (${fmtDate(b.startDate)} → ${fmtDate(b.endDate)})` : car;
 }
 
 // 4111111111111111 -> "4111 1111 1111 1111"
@@ -28,26 +33,46 @@ export default function PaymentsPage() {
   const [payments, setPayments] = useState(null);
   const [listErr, setListErr] = useState('');
 
-  async function loadPayments() {
-    setListErr('');
-    try {
-      const list = await api.payments.mine();
-      setPayments(list);
-    } catch (e) {
-      setListErr(e.message);
-    }
-  }
+  // loadPayments()/loadBookings() ask for a refetch; the effects do it, so a
+  // stale response can be ignored.
+  const [paymentsKey, setPaymentsKey] = useState(0);
+  const [bookingsKey, setBookingsKey] = useState(0);
+  const loadPayments = () => setPaymentsKey((k) => k + 1);
+  const loadBookings = () => setBookingsKey((k) => k + 1);
 
-  async function loadBookings() {
-    try {
-      setBookings(await api.reservations.mine());
-    } catch (e) {
-      setFormMsg({ text: e.message, kind: 'err' });
-      setBookings([]);
-    }
-  }
+  useEffect(() => {
+    let active = true;
+    api.payments
+      .mine()
+      .then((data) => {
+        if (!active) return;
+        setListErr('');
+        setPayments(data);
+      })
+      .catch((e) => {
+        if (active) setListErr(e.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [api, paymentsKey]);
 
-  useEffect(() => { loadPayments(); loadBookings(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  useEffect(() => {
+    let active = true;
+    api.reservations
+      .mine()
+      .then((data) => {
+        if (active) setBookings(data);
+      })
+      .catch((e) => {
+        if (!active) return;
+        setFormMsg({ text: e.message, kind: 'err' });
+        setBookings([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [api, bookingsKey]);
 
   const payable = (bookings || []).filter(PAYABLE);
   const cardDigits = cardNumber.replace(/\D/g, '');
@@ -104,8 +129,13 @@ export default function PaymentsPage() {
               <option value="">
                 {bookings === null ? 'Loading your bookings…' : payable.length ? 'Select a booking to pay…' : 'No bookings awaiting payment'}
               </option>
-              {payable.map((b) => <option key={b.id} value={String(b.id)}>{bookingLabel(b)}</option>)}
+              {payable.map((b) => <option key={b.id} value={String(b.id)}>{bookingLabel(b, payable)}</option>)}
             </select>
+          </div>
+          <div className="field">
+            <label>Amount to pay</label>
+            <input value={byBookingId[bookingId] ? fmtMoney(byBookingId[bookingId].totalAmount) : '—'} readOnly
+              aria-live="polite" style={{ width: 120, fontWeight: 600 }} />
           </div>
           <div className="field">
             <label>Method</label>
@@ -133,9 +163,9 @@ export default function PaymentsPage() {
         <h2>My payments</h2>
         <Message text={listErr} kind="err" />
         {payments === null ? (
-          <div className="hint">Loading…</div>
+          <Skeleton rows={3} />
         ) : payments.length === 0 ? (
-          <Empty>No payments yet.</Empty>
+          <Empty action={{ label: 'Browse cars', to: '/browse' }}>No payments yet. Book a car to get started.</Empty>
         ) : (
           <table>
             <thead>

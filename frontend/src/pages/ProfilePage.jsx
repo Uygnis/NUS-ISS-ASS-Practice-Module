@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useApi } from '../api/useApi';
-import { useAuth } from '../context/AuthContext';
-import { Message, FieldError, fieldClass } from '../components/ui';
+import { useAuth } from '../context/useAuth';
+import { Message, Skeleton, FieldError } from '../components/ui';
+import { fieldClass } from '../components/format';
 
 export default function ProfilePage() {
   const api = useApi();
@@ -14,19 +15,24 @@ export default function ProfilePage() {
   const [fieldErrs, setFieldErrs] = useState({});
   const [saving, setSaving] = useState(false);
 
-  async function load() {
-    setErr('');
-    try {
-      const data = await api.accounts.me();
-      setMe(data);
-      setFullName(data.fullName || '');
-      setPhone(data.phone || '');
-    } catch (e) {
-      setErr(e.message);
-    }
-  }
-
-  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  // Fetched inside the effect so a stale response can be ignored.
+  useEffect(() => {
+    let active = true;
+    api.accounts.me()
+      .then((data) => {
+        if (!active) return;
+        setErr('');
+        setMe(data);
+        setFullName(data.fullName || '');
+        setPhone(data.phone || '');
+      })
+      .catch((e) => {
+        if (active) setErr(e.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [api]);
 
   async function save(e) {
     e.preventDefault();
@@ -52,7 +58,7 @@ export default function ProfilePage() {
       <h2>My profile</h2>
       {err && <Message text={err} kind="err" />}
       {!me ? (
-        <div className="hint">Loading…</div>
+        <Skeleton rows={2} />
       ) : (
         <form onSubmit={save}>
           <div className="row">

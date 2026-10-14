@@ -1,16 +1,14 @@
 import { useEffect, useState, Fragment } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useApi } from "../api/useApi";
-import {
-  Message,
-  Empty,
-  StatusPill,
-  fmtMoney,
-  fmtDate,
-  BOOKING_STATUS_CLASS,
-  todayISO,
-  dateRangeError,
-} from "../components/ui";
+import { Message, Empty, Skeleton, StatusPill } from "../components/ui";
+import { fmtMoney, fmtDate, BOOKING_STATUS_CLASS, todayISO, dateRangeError } from "../components/format";
+
+function lockedReason(b) {
+  if (b.status === "CONFIRMED") return "Paid bookings can't be changed or cancelled here";
+  if (b.status === "CANCELLED") return "This booking was cancelled";
+  return "";
+}
 
 export default function BookingsPage() {
   const api = useApi();
@@ -20,29 +18,34 @@ export default function BookingsPage() {
   const [err, setErr] = useState("");
   const [editingId, setEditingId] = useState(null);
   const [editDraft, setEditDraft] = useState(null);
-  const [notice, setNotice] = useState("");
+  const justCreated = routerLocation.state?.justCreated;
+  // Seeded from the navigation state rather than set in an effect.
+  const [notice, setNotice] = useState(
+    justCreated ? `Booking #${justCreated} created. Pay to confirm it.` : "",
+  );
   const [editErr, setEditErr] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
 
-  useEffect(() => {
-    if (routerLocation.state?.justCreated) {
-      setNotice(`Booking #${routerLocation.state.justCreated} created.`);
-    }
-  }, [routerLocation.state]);
-
-  async function load() {
-    setErr("");
-    try {
-      const list = await api.reservations.mine();
-      setBookings(list);
-    } catch (e) {
-      setErr(e.message);
-    }
-  }
+  // load() asks for a refetch; the effect does it. Fetching inside the
+  // effect (not via a local async function) lets a stale response be ignored.
+  const [reloadKey, setReloadKey] = useState(0);
+  const load = () => setReloadKey((k) => k + 1);
 
   useEffect(() => {
-    load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */
-  }, []);
+    let active = true;
+    api.reservations.mine()
+      .then((data) => {
+        if (!active) return;
+        setErr("");
+        setBookings(data);
+      })
+      .catch((e) => {
+        if (active) setErr(e.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [api, reloadKey]);
 
   function startEdit(b) {
     setEditErr("");
@@ -95,16 +98,24 @@ export default function BookingsPage() {
   return (
     <div className="panel">
       <h2>My bookings</h2>
-      <Message text={notice} kind="ok" />
+      {justCreated && notice.startsWith(`Booking #${justCreated} created`) ? (
+        <Message text={notice} kind="ok" sticky>
+          <button className="small accent" onClick={() => goPay(justCreated)}>
+            Pay now
+          </button>
+        </Message>
+      ) : (
+        <Message text={notice} kind="ok" />
+      )}
       <Message text={err} kind="err" />
       {bookings === null ? (
-        <div className="hint">Loading…</div>
+        <Skeleton rows={4} />
       ) : bookings.length === 0 ? (
-        <Empty>
-          No bookings yet. Head to Browse &amp; book to reserve a car.
+        <Empty action={{ label: "Browse cars", to: "/browse" }}>
+          You have no bookings yet.
         </Empty>
       ) : (
-        <table>
+        <table className="stack">
           <thead>
             <tr>
               <th>ID</th>
@@ -120,24 +131,25 @@ export default function BookingsPage() {
             {bookings.map((b) => (
               <Fragment key={b.id}>
                 <tr>
-                  <td className="mono">#{b.id}</td>
-                  <td>
+                  <td data-label="ID" className="mono">#{b.id}</td>
+                  <td data-label="Car">
                     {b.carMake} {b.carModel}
                     <div className="hint">{b.carType}</div>
                   </td>
-                  <td>
+                  <td data-label="Dates">
                     {fmtDate(b.startDate)} → {fmtDate(b.endDate)}
                   </td>
-                  <td>{b.pickupLocation || "—"}</td>
-                  <td>{fmtMoney(b.totalAmount)}</td>
-                  <td>
+                  <td data-label="Pickup">{b.pickupLocation || "—"}</td>
+                  <td data-label="Total">{fmtMoney(b.totalAmount)}</td>
+                  <td data-label="Status">
                     <StatusPill status={b.status} map={BOOKING_STATUS_CLASS} />
                   </td>
-                  <td>
+                  <td data-label="Actions">
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                       <button
                         className="small"
                         onClick={() => startEdit(b)}
+                        title={lockedReason(b) || "Change the dates or pickup location"}
                         disabled={
                           b.status === "CONFIRMED" || b.status === "CANCELLED"
                         }
@@ -147,6 +159,7 @@ export default function BookingsPage() {
                       <button
                         className="small danger"
                         onClick={() => cancelBooking(b.id)}
+                        title={lockedReason(b) || "Cancel this booking"}
                         disabled={
                           b.status === "CONFIRMED" || b.status === "CANCELLED"
                         }
@@ -156,6 +169,11 @@ export default function BookingsPage() {
                       <button
                         className="small accent"
                         onClick={() => goPay(b.id)}
+                        title={
+                          b.status === "PENDING_PAYMENT"
+                            ? "Pay for this booking"
+                            : "Only bookings awaiting payment can be paid"
+                        }
                         disabled={b.status !== "PENDING_PAYMENT"}
                       >
                         Pay

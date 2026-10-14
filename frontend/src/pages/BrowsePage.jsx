@@ -2,7 +2,25 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi } from '../api/useApi';
 import { CAR_TYPES } from '../api/catalog';
-import { Message, Empty, fmtMoney, todayISO, dateRangeError, rentalDays } from '../components/ui';
+import CarArt from '../components/CarArt';
+import { Message, Empty, Skeleton } from '../components/ui';
+import { fmtMoney, todayISO, dateRangeError, rentalDays } from '../components/format';
+
+const SORTS = {
+  'price-asc': (a, b) => Number(a.dailyRate) - Number(b.dailyRate),
+  'price-desc': (a, b) => Number(b.dailyRate) - Number(a.dailyRate),
+  'year-desc': (a, b) => (b.year || 0) - (a.year || 0),
+};
+
+function sortCars(cars, sort) {
+  return [...cars].sort(SORTS[sort] || SORTS['price-asc']);
+}
+
+/** "2026-12-10" -> "10 Dec" */
+function fmtShort(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+}
 
 export default function BrowsePage() {
   const api = useApi();
@@ -15,9 +33,20 @@ export default function BrowsePage() {
   const [startDate, setStartDate] = useState(params.get('startDate') || '');
   const [endDate, setEndDate] = useState(params.get('endDate') || '');
   const [locations, setLocations] = useState([]);
+  const [sort, setSort] = useState('price-asc');
+  // The search that results are shown for; null until the first search. Seeded
+  // from the URL so Back and shared links restore it.
+  const [query, setQuery] = useState(() => {
+    if (![...params.keys()].length) return null;
+    const q = { location: params.get('location') || '', type: params.get('type') || '', startDate: params.get('startDate') || '', endDate: params.get('endDate') || '' };
+    return q.startDate || q.endDate ? (dateRangeError(q.startDate, q.endDate) ? null : q) : q;
+  });
   const [cars, setCars] = useState(null);
-  const [err, setErr] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(() => {
+    const s0 = params.get('startDate'), e0 = params.get('endDate');
+    return s0 || e0 ? dateRangeError(s0, e0) : '';
+  });
+  const [busy, setBusy] = useState(() => query !== null);
   const [bookingDraft, setBookingDraft] = useState(null); // {carId, location, startDate, endDate}
   const [bookErr, setBookErr] = useState('');
   const [booking, setBooking] = useState(false);
@@ -38,25 +67,41 @@ export default function BrowsePage() {
     api.catalog.search('', '')
       .then((all) => setLocations([...new Set(all.map((c) => c.location).filter(Boolean))].sort()))
       .catch(() => {});
-    if ([...params.keys()].length) search();
-    /* eslint-disable-next-line react-hooks/exhaustive-deps */
-  }, []);
+  }, [api]);
+
+  useEffect(() => {
+    if (!query) return undefined;
+    let active = true;
+    const { location: loc, type: t, startDate: sd, endDate: ed } = query;
+    (sd && ed
+      ? api.reservations.availability({ location: loc, type: t, startDate: sd, endDate: ed })
+      : api.catalog.search(loc, t))
+      .then((results) => {
+        if (!active) return;
+        setErr('');
+        setCars(results);
+      })
+      .catch((e) => {
+        if (!active) return;
+        setErr(e.message);
+        setCars(null);
+      })
+      .finally(() => {
+        if (active) setBusy(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [api, query]);
 
   function clearFilters() {
     setLocation(''); setType(''); setStartDate(''); setEndDate('');
-    setCars(null); setErr(''); setBookingDraft(null);
+    setQuery(null); setCars(null); setErr(''); setBusy(false); setBookingDraft(null);
     setParams({}, { replace: true });
   }
 
   function runSearch(e) {
     e.preventDefault();
-    const next = Object.fromEntries(Object.entries({ location, type, startDate, endDate }).filter(([, v]) => v));
-    setParams(next, { replace: true });
-    search();
-  }
-
-  async function search() {
-    setErr('');
     if (startDate || endDate) {
       const rangeErr = dateRangeError(startDate, endDate);
       if (rangeErr) {
@@ -64,18 +109,12 @@ export default function BrowsePage() {
         return;
       }
     }
+    const values = { location, type, startDate, endDate };
+    setParams(Object.fromEntries(Object.entries(values).filter(([, v]) => v)), { replace: true });
+    setErr('');
     setBusy(true);
-    try {
-      const results = startDate && endDate
-        ? await api.reservations.availability({ location, type, startDate, endDate })
-        : await api.catalog.search(location, type);
-      setCars(results);
-    } catch (e2) {
-      setErr(e2.message);
-      setCars(null);
-    } finally {
-      setBusy(false);
-    }
+    // A fresh object every time, so pressing Search again refetches.
+    setQuery({ ...values });
   }
 
   function openBooking(car) {
@@ -149,25 +188,55 @@ export default function BrowsePage() {
           </div>
         </form>
         <Message text={err} kind="err" />
-        {cars === null ? (
-          <Empty>Run a search to see cars.</Empty>
+        {busy && cars === null ? (
+          <Skeleton rows={3} card />
+        ) : cars === null ? (
+          <Empty>Pick a location or dates and press Search — or just press Search to see every car.</Empty>
         ) : cars.length === 0 ? (
-          <Empty>No cars match. Try widening your search.</Empty>
+          <Empty>
+            No cars match {startDate && endDate ? `${fmtShort(startDate)}–${fmtShort(endDate)}` : 'that search'}. Try other dates, another location or any type.
+          </Empty>
         ) : (
-          <div className="cardgrid">
-            {cars.map((c) => {
-              const id = c.carId ?? c.id;
-              return (
-                <div className="carcard" key={id}>
-                  <span className="type mono">{c.type}</span>
-                  <h4>{c.make} {c.model}</h4>
-                  <div className="hint">{c.year || ''} · {c.location || ''}</div>
-                  <div className="rate">{fmtMoney(c.dailyRate)}<span> /day</span></div>
-                  <button className="accent small" onClick={() => openBooking(c)}>Book this car</button>
-                </div>
-              );
-            })}
-          </div>
+          <>
+            <div className="results-bar">
+              <div className="hint">
+                <strong>{cars.length}</strong> {cars.length === 1 ? 'car' : 'cars'} available
+                {startDate && endDate ? ` ${fmtShort(startDate)} – ${fmtShort(endDate)}` : ''}
+                {location ? ` in ${location}` : ''}
+              </div>
+              <label className="hint" style={{ display: 'flex', alignItems: 'center', gap: 6, margin: 0 }}>
+                Sort by
+                <select value={sort} onChange={(e) => setSort(e.target.value)}>
+                  <option value="price-asc">Price: low to high</option>
+                  <option value="price-desc">Price: high to low</option>
+                  <option value="year-desc">Newest first</option>
+                </select>
+              </label>
+            </div>
+            <div className="cardgrid">
+              {sortCars(cars, sort).map((c) => {
+                const id = c.carId ?? c.id;
+                return (
+                  <div className="carcard" key={id}>
+                    <CarArt type={c.type} />
+                    <span className="type mono">{c.type}</span>
+                    <div className="body">
+                      <h4>{c.make} {c.model}</h4>
+                      <div className="chips">
+                        {c.year && <span className="chip">{c.year}</span>}
+                        {c.location && <span className="chip">{c.location}</span>}
+                      </div>
+                      <div className="foot">
+                        <div className="rate">{fmtMoney(c.dailyRate)}<span> /day</span></div>
+                        <button className="accent small" onClick={() => openBooking(c)}
+                          aria-label={`Book the ${c.make} ${c.model}`}>Book this car</button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
         )}
       </div>
 
@@ -179,9 +248,25 @@ export default function BrowsePage() {
               <div className="field">
                 <label>Car</label>
                 <input
-                  value={`${bookingDraft.car.make} ${bookingDraft.car.model}${bookingDraft.car.year ? ` (${bookingDraft.car.year})` : ''} · ${bookingDraft.car.type} · ${fmtMoney(bookingDraft.car.dailyRate)}/day`}
+                  value={`${bookingDraft.car.make} ${bookingDraft.car.model}${bookingDraft.car.year ? ` (${bookingDraft.car.year})` : ''}`}
                   readOnly
                 />
+              </div>
+              <div className="field">
+                <label>Price to pay</label>
+                <input
+                  value={rentalDays(bookingDraft.startDate, bookingDraft.endDate) > 0
+                    ? fmtMoney(rentalDays(bookingDraft.startDate, bookingDraft.endDate) * Number(bookingDraft.car.dailyRate))
+                    : 'Choose your dates'}
+                  readOnly
+                  aria-live="polite"
+                  style={{ fontWeight: 600 }}
+                />
+                <div className="hint" style={{ marginTop: 4 }}>
+                  {rentalDays(bookingDraft.startDate, bookingDraft.endDate) > 0
+                    ? `${rentalDays(bookingDraft.startDate, bookingDraft.endDate)} day(s) × ${fmtMoney(bookingDraft.car.dailyRate)}/day`
+                    : `${fmtMoney(bookingDraft.car.dailyRate)}/day`}
+                </div>
               </div>
               <div className="field">
                 <label>Pickup location</label>
@@ -201,12 +286,6 @@ export default function BrowsePage() {
                   onChange={(e) => setBookingDraft((d) => ({ ...d, endDate: e.target.value }))} required />
               </div>
             </div>
-            {rentalDays(bookingDraft.startDate, bookingDraft.endDate) > 0 && (
-              <div className="hint" style={{ marginBottom: 12 }}>
-                {rentalDays(bookingDraft.startDate, bookingDraft.endDate)} day(s) × {fmtMoney(bookingDraft.car.dailyRate)} ={' '}
-                <strong>{fmtMoney(rentalDays(bookingDraft.startDate, bookingDraft.endDate) * Number(bookingDraft.car.dailyRate))}</strong>
-              </div>
-            )}
             <Message text={bookErr} kind="err" />
             <div className="row">
               <button type="submit" className="primary" disabled={booking}>{booking ? 'Booking…' : 'Confirm booking'}</button>
