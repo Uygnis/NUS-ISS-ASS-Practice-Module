@@ -21,6 +21,8 @@ export default function BookingsPage() {
   const [editingId, setEditingId] = useState(null);
   const [editDraft, setEditDraft] = useState(null);
   const [notice, setNotice] = useState("");
+  const [editErr, setEditErr] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
 
   useEffect(() => {
     if (routerLocation.state?.justCreated) {
@@ -43,6 +45,7 @@ export default function BookingsPage() {
   }, []);
 
   function startEdit(b) {
+    setEditErr("");
     setEditingId(b.id);
     setEditDraft({
       startDate: b.startDate,
@@ -58,15 +61,20 @@ export default function BookingsPage() {
       allowPastStart: editDraft.startDate === originalStart,
     });
     if (rangeErr) {
-      setErr(rangeErr);
+      setEditErr(rangeErr);
       return;
     }
+    setEditErr("");
+    setSavingEdit(true);
     try {
       await api.reservations.update(id, editDraft);
       setEditingId(null);
+      setNotice(`Booking #${id} updated.`);
       load();
     } catch (e) {
-      setErr(e.message);
+      setEditErr(e.message);
+    } finally {
+      setSavingEdit(false);
     }
   }
 
@@ -158,7 +166,14 @@ export default function BookingsPage() {
                 {editingId === b.id && (
                   <tr>
                     <td colSpan={7}>
-                      <div className="inline-form" style={{ margin: "6px 0" }}>
+                      <form
+                        className="inline-form"
+                        style={{ margin: "6px 0" }}
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          saveEdit(b.id, b.startDate);
+                        }}
+                      >
                         <div className="field">
                           <label>Start date</label>
                           <input
@@ -201,21 +216,24 @@ export default function BookingsPage() {
                         </div>
                         <div className="field">
                           <button
+                            type="submit"
                             className="primary small"
-                            onClick={() => saveEdit(b.id, b.startDate)}
+                            disabled={savingEdit}
                           >
-                            Save
+                            {savingEdit ? "Saving…" : "Save"}
                           </button>
                         </div>
                         <div className="field">
                           <button
+                            type="button"
                             className="small"
                             onClick={() => setEditingId(null)}
                           >
                             Cancel
                           </button>
                         </div>
-                      </div>
+                      </form>
+                      <Message text={editErr} kind="err" />
                     </td>
                   </tr>
                 )}

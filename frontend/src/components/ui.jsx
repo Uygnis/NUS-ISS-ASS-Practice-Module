@@ -1,3 +1,4 @@
+import { useState } from 'react';
 export const BOOKING_STATUS_CLASS = { PENDING_PAYMENT: 'st-warn', CONFIRMED: 'st-ok', MODIFIED: 'st-warn', CANCELLED: 'st-bad', COMPLETED: 'st-neu' };
 export const PAYMENT_STATUS_CLASS = { INITIATED: 'st-warn', SUCCESS: 'st-ok', FAILED: 'st-bad', REFUNDED: 'st-neu' };
 export const CONFIRM_STATE_CLASS = { CONFIRMED: 'st-ok', PENDING: 'st-warn', COMPENSATED: 'st-neu', AWAITING_COMPENSATION: 'st-warn', NOT_APPLICABLE: 'st-neu' };
@@ -56,4 +57,18 @@ export function FieldError({ errors, name }) {
 
 export function fieldClass(errors, name) {
   return errors && errors[name] ? 'field invalid' : 'field';
+}
+
+/** Password field with a show/hide toggle. Extra props go to the <input>. */
+export function PasswordInput(props) {
+  const [shown, setShown] = useState(false);
+  return (
+    <div className="pw-wrap">
+      <input {...props} type={shown ? 'text' : 'password'} />
+      <button type="button" className="pw-toggle" onClick={() => setShown((v) => !v)}
+        aria-label={shown ? 'Hide password' : 'Show password'} aria-pressed={shown}>
+        {shown ? 'Hide' : 'Show'}
+      </button>
+    </div>
+  );
 }

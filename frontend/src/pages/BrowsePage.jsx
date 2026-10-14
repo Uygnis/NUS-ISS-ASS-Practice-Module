@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi } from '../api/useApi';
 import { CAR_TYPES } from '../api/catalog';
 import { Message, Empty, fmtMoney, todayISO, dateRangeError, rentalDays } from '../components/ui';
@@ -7,10 +7,14 @@ import { Message, Empty, fmtMoney, todayISO, dateRangeError, rentalDays } from '
 export default function BrowsePage() {
   const api = useApi();
   const navigate = useNavigate();
-  const [location, setLocation] = useState('');
-  const [type, setType] = useState('');
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  // The search lives in the URL so Back from My bookings returns to the same
+  // results, and a search can be shared as a link.
+  const [params, setParams] = useSearchParams();
+  const [location, setLocation] = useState(params.get('location') || '');
+  const [type, setType] = useState(params.get('type') || '');
+  const [startDate, setStartDate] = useState(params.get('startDate') || '');
+  const [endDate, setEndDate] = useState(params.get('endDate') || '');
+  const [locations, setLocations] = useState([]);
   const [cars, setCars] = useState(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -29,8 +33,29 @@ export default function BrowsePage() {
     bookingPanel.current.querySelector('input:not([readonly])')?.focus({ preventScroll: true });
   }, [draftCarId]);
 
-  async function runSearch(e) {
+  useEffect(() => {
+    // Known pickup locations for the Location suggestions; best effort.
+    api.catalog.search('', '')
+      .then((all) => setLocations([...new Set(all.map((c) => c.location).filter(Boolean))].sort()))
+      .catch(() => {});
+    if ([...params.keys()].length) search();
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, []);
+
+  function clearFilters() {
+    setLocation(''); setType(''); setStartDate(''); setEndDate('');
+    setCars(null); setErr(''); setBookingDraft(null);
+    setParams({}, { replace: true });
+  }
+
+  function runSearch(e) {
     e.preventDefault();
+    const next = Object.fromEntries(Object.entries({ location, type, startDate, endDate }).filter(([, v]) => v));
+    setParams(next, { replace: true });
+    search();
+  }
+
+  async function search() {
     setErr('');
     if (startDate || endDate) {
       const rangeErr = dateRangeError(startDate, endDate);
@@ -94,7 +119,10 @@ export default function BrowsePage() {
         <form className="inline-form" onSubmit={runSearch}>
           <div className="field">
             <label>Location</label>
-            <input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="e.g. Singapore" />
+            <input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Any location" list="rentez-locations" />
+            <datalist id="rentez-locations">
+              {locations.map((l) => <option key={l} value={l} />)}
+            </datalist>
           </div>
           <div className="field">
             <label>Type</label>
@@ -112,7 +140,12 @@ export default function BrowsePage() {
             <input type="date" value={endDate} min={startDate || today} onChange={(e) => setEndDate(e.target.value)} />
           </div>
           <div className="field">
-            <button type="submit" className="primary" disabled={busy}>{busy ? 'Searching…' : 'Search'}</button>
+            <div className="row" style={{ gap: 6 }}>
+              <button type="submit" className="primary" disabled={busy}>{busy ? 'Searching…' : 'Search'}</button>
+              {(location || type || startDate || endDate || cars) && (
+                <button type="button" onClick={clearFilters}>Clear</button>
+              )}
+            </div>
           </div>
         </form>
         <Message text={err} kind="err" />

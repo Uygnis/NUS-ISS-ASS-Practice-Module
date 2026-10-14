@@ -68,6 +68,10 @@ input:focus,select:focus,textarea:focus,button:focus-visible{
 label{font-size:13px;color:var(--steel);display:block;margin-bottom:3px;}
 .field{margin-bottom:12px;}
 .field.invalid input,.field.invalid select{border-color:var(--route-red);}
+.pw-wrap{position:relative;}
+.pw-wrap input{padding-right:62px;}
+.pw-toggle{position:absolute;right:4px;top:50%;transform:translateY(-50%);padding:3px 9px;font-size:12px;}
+.pw-toggle:active{transform:translateY(-50%);}
 .field-err{color:var(--route-red);font-size:12px;margin-top:4px;}
 .row{display:flex;gap:12px;flex-wrap:wrap;}
 .row > .field{flex:1;min-width:150px;}

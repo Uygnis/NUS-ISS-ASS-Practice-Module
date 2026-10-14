@@ -19,7 +19,7 @@ Legend: 🐞 bug · ✨ enhancement · Priority **P1** (do first) / **P2** / **P
 | B2 ✅ | `BrowsePage.jsx` — booking form | **Car ID** is an editable number field. A user can change it and book a different car by accident. | Make it read-only and show the car's make, model, type and rate instead of a raw ID. | P1 |
 | B3 ✅ | `BrowsePage.jsx` / `BookingsPage.jsx` date inputs | Past dates can be picked, and End can be set before Start. The backend rejects this with "endDate cannot be before startDate". | Set `min` = today on Start and `min` = Start on End. Validate on the client before sending. | P1 |
 | B4 ✅ | `BookingService.requireOrderedDates` | Bookings in the past are accepted by the backend. | Reject `startDate < today` with 400 "Start date can't be in the past". | P1 |
-| B5 | `BookingsPage.jsx` — inline edit | The Save/Cancel buttons are not inside a `<form>`, so Enter does nothing. Save errors also replace the page-level error and are easy to miss. | Wrap the edit row in a form and show errors inside the edit row. | P2 |
+| B5 ✅ | `BookingsPage.jsx` — inline edit | The Save/Cancel buttons are not inside a `<form>`, so Enter does nothing. Save errors also replace the page-level error and are easy to miss. | Wrap the edit row in a form and show errors inside the edit row. | P2 |
 | B6 ✅ | `PaymentsPage.jsx` | Card number shows for PAYPAL/WALLET. "optional" placeholder is misleading for CARD. | Show the card field only for CARD, require it there, and allow digits only, formatted `#### #### #### ####`. | P1 |
 | B7 ✅ | `PaymentsPage.jsx` | Booking ID is free text. Users have to remember IDs. | Use a dropdown of the user's `PENDING_PAYMENT` bookings, labelled with car, dates and amount. Keep the preselect from the "Pay" button. | P1 |
 | B8 ✅ | `PaymentsPage.jsx` | The Pay button has no busy state, so a double-click sends two requests. Idempotency prevents a double charge, but the user still sees a confusing error. | Disable the button while the request runs and show "Processing…". | P1 |
@@ -46,14 +46,14 @@ Legend: 🐞 bug · ✨ enhancement · Priority **P1** (do first) / **P2** / **P
 
 | # | Form | Enhancement |
 |---|---|---|
-| F1 | Register | Add `autoComplete` (`name`, `email`, `tel`, `new-password`). Make phone `type="tel"` with a pattern hint like "+65 9123 4567". Add a show/hide password toggle and a confirm-password field. |
-| F2 | Login | Add `autoComplete="email" / "current-password"` and a show/hide toggle. Autofocus the email field. |
-| F3 | Browse search | Turn Location into a dropdown or `<datalist>` of the known locations from the catalog results. Add a "Clear filters" button. Keep the search in the URL query so the back button works. |
-| F4 | Booking form | Show a live price summary: "3 days × $80.00 = **$240.00**", matching the backend's inclusive day count. Prefill the pickup location from the car. |
-| F5 | Fleet → Add car | Set `min=1990 max=currentYear+1` on Year and `step=0.01 min=0` on Daily rate. Clear the form after a successful save and show a success message. |
+| F1 ✅ | Register | Add `autoComplete` (`name`, `email`, `tel`, `new-password`). Make phone `type="tel"` with a pattern hint like "+65 9123 4567". Add a show/hide password toggle and a confirm-password field. |
+| F2 ✅ | Login | Add `autoComplete="email" / "current-password"` and a show/hide toggle. Autofocus the email field. |
+| F3 ✅ | Browse search | Turn Location into a dropdown or `<datalist>` of the known locations from the catalog results. Add a "Clear filters" button. Keep the search in the URL query so the back button works. |
+| F4 ✅ | Booking form | Show a live price summary: "3 days × $80.00 = **$240.00**", matching the backend's inclusive day count. Prefill the pickup location from the car. |
+| F5 ✅ | Fleet → Add car | Set `min=1990 max=currentYear+1` on Year and `step=0.01 min=0` on Daily rate. Clear the form after a successful save and show a success message. |
 | F6 ✅ | Fleet → Maintenance | Use a dropdown of cars ("#12 Toyota Corolla") instead of a raw Car ID. |
-| F7 | Profile | Use `type="tel"` for phone. Disable the Save button until something has changed. |
-| F8 | All submit buttons | Show a consistent busy state (`disabled` plus "…ing" label). Several forms (payments, profile, fleet, bookings edit) don't have one yet. |
+| F7 ✅ | Profile | Use `type="tel"` for phone. Disable the Save button until something has changed. |
+| F8 ✅ | All submit buttons | Show a consistent busy state (`disabled` plus "…ing" label). Several forms (payments, profile, fleet, bookings edit) don't have one yet. |
 
 ## 4. Card & layout design (existing palette only)
 
@@ -99,6 +99,15 @@ Today, only 8 classes log anything (DataSeeder, Outbox dispatchers, PaymentServi
 - **E2/E3.** Network failures read "We can't reach RentEz right now…". A 401 on a signed-in request clears the session and shows "Your session has expired. Please sign in again." on the sign-in page. A wrong password still shows "Invalid email or password", because the login request carries no token. A 403 reads "You don't have access to this."
 - **E5–E8.** Backend messages were reworded in all five services: not found, not yours, cancelled/completed, payment declined, already paid, a dependency temporarily unavailable, and the staff car-status restriction. Tests that pinned the old monolith wording were updated. The phrases "already booked" and "already been paid" were kept, because `perf/demo/record-usecases.js` matches on them.
 - **Found while doing E6:** the backend only accepts payment for `PENDING_PAYMENT` bookings. The Pay button and the payment dropdown also offered `MODIFIED` bookings, which are already paid, so they would always fail. Both now offer only `PENDING_PAYMENT` bookings, and the backend explains each status instead of "not awaiting payment (status: X)".
+- **F1–F8 (form fields).**
+  - **Register:** `autocomplete` on every field; phone is `type="tel"`, optional, with a `+65 9123 4567` hint; a Show/Hide password toggle (`PasswordInput` in `ui.jsx`); and a confirm-password field that is checked before the request is sent.
+  - **Login:** the email field is focused on load, with correct `autocomplete` and the Show/Hide toggle.
+  - **Browse:** the search is kept in the URL (`?location=…&startDate=…`), so Back and shared links restore the results. Location suggests known pickup points (a `<datalist>` built from the catalog), and a Clear button resets everything.
+  - **Booking form (F4):** the price summary and pickup prefill shipped with the earlier bug fixes.
+  - **Add car:** year limited to 1990 through next year, rate at least 0.01, placeholders, and a busy state.
+  - **Maintenance:** a description hint and a busy state.
+  - **Profile:** phone is `type="tel"`, and Save stays disabled until something changes.
+  - **My bookings:** the Modify row is now a real form, so Enter saves. It has a busy state, a success notice, and shows errors inside the row (this also closes B5).
 - **B8.** `perf/demo/record-usecases.js` use case 3 double-clicks "Pay" to demonstrate idempotency. The button now disables after the first click, so re-record that clip or send the second request through the API.
 
 ### Verification (2026-10-15, local `make up` stack)
@@ -109,7 +118,8 @@ Today, only 8 classes log anything (DataSeeder, Outbox dispatchers, PaymentServi
 - Clicked through in the browser:
   - **Customer:** search with past dates is blocked; the booking form scrolls into view with the car name and a price summary; the payment form shows a booking dropdown, the card field only for cards, card number formatting and validation, and a success message.
   - **Staff:** both maintenance car dropdowns work, and choosing a car loads its history straight away.
-- **Not yet clicked through:** scheduling maintenance, and the Modify form on My bookings.
+- **Form fields in the browser:** the Register password toggle and confirm mismatch; login autofocus; Browse restoring a search from the URL, location suggestions and Clear; Profile Save enabling and disabling; and Modify saving on Enter (re-priced 4 → 5 days, $260 → $325).
+- **Not yet clicked through:** scheduling maintenance, and the Add car limits. Both are covered by the build only.
 - The frontend lint count went from 21 to 24 errors: the new helpers in `ui.jsx` follow the file's existing pattern. CI does not run lint.
 
 ## Suggested order of work

@@ -186,6 +186,7 @@ function AddCarPanel() {
   });
   const [msg, setMsg] = useState(null);
   const [fieldErrs, setFieldErrs] = useState({});
+  const [saving, setSaving] = useState(false);
 
   function set(field) {
     return (e) => setForm((f) => ({ ...f, [field]: e.target.value }));
@@ -195,6 +196,7 @@ function AddCarPanel() {
     e.preventDefault();
     setMsg(null);
     setFieldErrs({});
+    setSaving(true);
     try {
       const c = await api.catalog.create({
         make: form.make,
@@ -219,6 +221,8 @@ function AddCarPanel() {
     } catch (e2) {
       setFieldErrs(e2.fieldErrors || {});
       if (!Object.keys(e2.fieldErrors || {}).length) setMsg({ text: e2.message, kind: "err" });
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -239,7 +243,8 @@ function AddCarPanel() {
           </div>
           <div className={fieldClass(fieldErrs, "year")}>
             <label>Year</label>
-            <input type="number" value={form.year} onChange={set("year")} />
+            <input type="number" value={form.year} onChange={set("year")}
+              min={1990} max={new Date().getFullYear() + 1} placeholder={String(new Date().getFullYear())} />
             <FieldError errors={fieldErrs} name="year" />
           </div>
         </div>
@@ -259,6 +264,8 @@ function AddCarPanel() {
             <input
               type="number"
               step="0.01"
+              min="0.01"
+              placeholder="e.g. 80.00"
               value={form.dailyRate}
               onChange={set("dailyRate")}
               required
@@ -272,8 +279,8 @@ function AddCarPanel() {
           </div>
         </div>
         {msg && <Message text={msg.text} kind={msg.kind} />}
-        <button type="submit" className="primary">
-          Add car
+        <button type="submit" className="primary" disabled={saving}>
+          {saving ? "Adding…" : "Add car"}
         </button>
       </form>
     </div>
@@ -292,6 +299,7 @@ function MaintenancePanel() {
   const [history, setHistory] = useState(null);
   const [histErr, setHistErr] = useState("");
   const [cars, setCars] = useState([]);
+  const [scheduling, setScheduling] = useState(false);
 
   // Staff pick a car by name rather than typing its ID.
   useEffect(() => {
@@ -314,6 +322,7 @@ function MaintenancePanel() {
   async function submit(e) {
     e.preventDefault();
     setMsg(null);
+    setScheduling(true);
     try {
       const m = await api.catalog.scheduleMaintenance({
         carId: Number(form.carId),
@@ -327,6 +336,8 @@ function MaintenancePanel() {
       setForm({ carId: "", scheduledDate: "", description: "" });
     } catch (e2) {
       setMsg({ text: e2.message, kind: "err" });
+    } finally {
+      setScheduling(false);
     }
   }
 
@@ -385,12 +396,14 @@ function MaintenancePanel() {
             <input
               value={form.description}
               onChange={set("description")}
+              placeholder="e.g. Oil change and tyre rotation"
+              maxLength={500}
               required
             />
           </div>
           <div className="field">
-            <button type="submit" className="primary">
-              Schedule
+            <button type="submit" className="primary" disabled={scheduling}>
+              {scheduling ? "Scheduling…" : "Schedule"}
             </button>
           </div>
         </form>
