@@ -222,6 +222,30 @@ class CatalogFlowIntegrationTest {
 				.andExpect(jsonPath("$").isEmpty());
 	}
 
+	/**
+	 * The staff fleet list filtered by type alone used to 500 on Postgres:
+	 * the null location reached the LIKE as bytea. Same trap as above, on
+	 * findByFiltersNotStatus.
+	 */
+	@Test
+	void staffFleetListFiltersByTypeWithoutALocation() throws Exception {
+		MockMvc mvc = mvc();
+		createCar(mvc, "Kia", "Cerato");
+
+		mvc.perform(get("/api/catalog/cars/all")
+						.param("type", "SEDAN")
+						.header("Authorization", "Bearer " + TestTokens.staff()))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$[0].type").value("SEDAN"));
+
+		mvc.perform(get("/api/catalog/cars/all")
+						.param("type", "TRUCK")
+						.param("location", "nowhere")
+						.header("Authorization", "Bearer " + TestTokens.staff()))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$").isEmpty());
+	}
+
 	@Test
 	void internalCarViewReportsAMaintenanceCarAsNotRentable() throws Exception {
 		MockMvc mvc = mvc();

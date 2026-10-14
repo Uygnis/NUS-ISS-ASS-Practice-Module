@@ -50,10 +50,16 @@ public interface CarRepository extends JpaRepository<Car, Long> {
 			@Param("location") String location,
 			@Param("type") CarType type);
 
+	/**
+	 * Staff fleet list. Same untyped-null trap as {@link #findByFilters}: with
+	 * no location but a type, an uncast :location reached Postgres as bytea and
+	 * the request failed with a 500 ("function lower(bytea) does not exist").
+	 */
 	@Query("""
 		SELECT c FROM Car c
 		WHERE c.status <> :status
-		AND (:location IS NULL OR LOWER(c.location) LIKE LOWER(CONCAT('%', :location, '%')))
+		AND (cast(:location as String) IS NULL
+		     OR LOWER(c.location) LIKE LOWER(CONCAT('%', cast(:location as String), '%')))
 		AND (:type IS NULL OR c.type = :type)
 		""")
 	List<Car> findByFiltersNotStatus(
