@@ -120,6 +120,7 @@ Today, only 8 classes log anything (DataSeeder, Outbox dispatchers, PaymentServi
 - **Removed the "Service URLs / GATEWAY" footer** (`ConfigPanel.jsx`). It was a developer override for the gateway URL, saved in localStorage, with no use for customers. The gateway now always comes from `public/config.js` (set at deploy time), and any old saved override is cleared on load, so it can't silently send requests to the wrong place.
 - **Found during C5:** pages opened at the previous page's scroll position, so the booking notice was off-screen. `Layout` now scrolls to the top whenever the page changes.
 - **B11/B10.** Covered by C6 (relative times) and the earlier Profile changes (one message area, cleared on save).
+- **Demo script.** `perf/demo/record-usecases.js` lives on `docs/presentation-info-branch`, not `dev`, so this branch doesn't touch it. When the two meet, it needs: `input[placeholder=optional]` → `input[name=cardNumber]`, and the booking-ID `type(...)` → `select[name=bookingId]` `selectOption`.
 - **B8.** `perf/demo/record-usecases.js` use case 3 double-clicks "Pay" to demonstrate idempotency. The button now disables after the first click, so re-record that clip or send the second request through the API.
 
 ### Verification (2026-10-15, local `make up` stack)
@@ -133,7 +134,7 @@ Today, only 8 classes log anything (DataSeeder, Outbox dispatchers, PaymentServi
 - **Form fields in the browser:** the Register password toggle and confirm mismatch; login autofocus; Browse restoring a search from the URL, location suggestions and Clear; Profile Save enabling and disabling; and Modify saving on Enter (re-priced 4 → 5 days, $260 → $325).
 - **Cards and layout in the browser:** car art and sorting; booking showing the sticky notice, with Pay now preselecting the booking; notification icons and Mark all read clearing the badge; bookings as stacked cards at 375px wide with no sideways scroll; a success message closing after 4 seconds. Smoke test still 33/33.
 - **Not yet clicked through:** scheduling maintenance, and the Add car limits. Both are covered by the build only.
-- **Frontend lint is clean:** `npx eslint src` reports 0 errors and 0 warnings, down from 21 errors on `main` and 25 mid-branch.
+- **Frontend lint is clean:** `npm run lint` (the whole frontend, including `vite.config.js`, which now gets Node globals) reports 0 errors and 0 warnings, down from 21 errors on `main` and 25 mid-branch.
   - **Fast Refresh:** `ui.jsx` exports only components; constants and formatting helpers moved to `components/format.js`. The context hooks moved out of the provider files into `context/useAuth.js` and `context/useConfig.js`. They are named that way because macOS treats `authContext.js` and `AuthContext.jsx` as the same file.
   - **set-state-in-effect:** each page now fetches inside its effect, using `.then` with an `active` cleanup flag, so a stale response is ignored. `load()` just bumps a reload counter, so existing callers are unchanged. Browse runs its search from a `query` state seeded from the URL, and the Bookings "created" notice is seeded from the navigation state.
   - **Leftovers:** the dead `StatsPanel` reference and an unused assignment in `ConfigContext` were removed.
