@@ -8,6 +8,8 @@ import {
   fmtMoney,
   fmtDate,
   BOOKING_STATUS_CLASS,
+  todayISO,
+  dateRangeError,
 } from "../components/ui";
 
 export default function BookingsPage() {
@@ -49,7 +51,16 @@ export default function BookingsPage() {
     });
   }
 
-  async function saveEdit(id) {
+  async function saveEdit(id, originalStart) {
+    // A booking already under way keeps its past start date; only a moved
+    // start has to be today or later (same rule as the backend).
+    const rangeErr = dateRangeError(editDraft.startDate, editDraft.endDate, {
+      allowPastStart: editDraft.startDate === originalStart,
+    });
+    if (rangeErr) {
+      setErr(rangeErr);
+      return;
+    }
     try {
       await api.reservations.update(id, editDraft);
       setEditingId(null);
@@ -137,9 +148,7 @@ export default function BookingsPage() {
                       <button
                         className="small accent"
                         onClick={() => goPay(b.id)}
-                        disabled={
-                          b.status === "CONFIRMED" || b.status === "CANCELLED"
-                        }
+                        disabled={b.status !== "PENDING_PAYMENT"}
                       >
                         Pay
                       </button>
@@ -155,6 +164,7 @@ export default function BookingsPage() {
                           <input
                             type="date"
                             value={editDraft.startDate}
+                            min={b.startDate < todayISO() ? b.startDate : todayISO()}
                             onChange={(e) =>
                               setEditDraft((d) => ({
                                 ...d,
@@ -168,6 +178,7 @@ export default function BookingsPage() {
                           <input
                             type="date"
                             value={editDraft.endDate}
+                            min={editDraft.startDate}
                             onChange={(e) =>
                               setEditDraft((d) => ({
                                 ...d,
@@ -191,7 +202,7 @@ export default function BookingsPage() {
                         <div className="field">
                           <button
                             className="primary small"
-                            onClick={() => saveEdit(b.id)}
+                            onClick={() => saveEdit(b.id, b.startDate)}
                           >
                             Save
                           </button>

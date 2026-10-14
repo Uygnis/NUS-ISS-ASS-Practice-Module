@@ -9,7 +9,17 @@ export default function LoginPage() {
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [err, setErr] = useState("");
+  const [err, setErr] = useState(() => {
+    try {
+      if (sessionStorage.getItem("rentez_session_expired")) {
+        sessionStorage.removeItem("rentez_session_expired");
+        return "Your session has expired. Please sign in again.";
+      }
+    } catch {
+      /* storage blocked */
+    }
+    return "";
+  });
   const [busy, setBusy] = useState(false);
 
   async function handleSubmit(e) {

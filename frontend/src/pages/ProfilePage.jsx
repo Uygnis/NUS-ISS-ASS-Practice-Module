@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useApi } from '../api/useApi';
 import { useAuth } from '../context/AuthContext';
-import { Message } from '../components/ui';
+import { Message, FieldError, fieldClass } from '../components/ui';
 
 export default function ProfilePage() {
   const api = useApi();
@@ -11,6 +11,7 @@ export default function ProfilePage() {
   const [phone, setPhone] = useState('');
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
+  const [fieldErrs, setFieldErrs] = useState({});
 
   async function load() {
     setErr('');
@@ -28,13 +29,14 @@ export default function ProfilePage() {
 
   async function save(e) {
     e.preventDefault();
-    setMsg(''); setErr('');
+    setMsg(''); setErr(''); setFieldErrs({});
     try {
       const updated = await api.accounts.updateMe({ fullName, phone });
       updateName(updated.fullName);
       setMsg('Profile updated.');
     } catch (e2) {
-      setErr(e2.message);
+      setFieldErrs(e2.fieldErrors || {});
+      setErr(Object.keys(e2.fieldErrors || {}).length ? '' : e2.message);
     }
   }
 
@@ -47,13 +49,15 @@ export default function ProfilePage() {
       ) : (
         <form onSubmit={save}>
           <div className="row">
-            <div className="field">
+            <div className={fieldClass(fieldErrs, 'fullName')}>
               <label>Full name</label>
               <input value={fullName} onChange={(e) => setFullName(e.target.value)} required />
+              <FieldError errors={fieldErrs} name="fullName" />
             </div>
-            <div className="field">
+            <div className={fieldClass(fieldErrs, 'phone')}>
               <label>Phone</label>
               <input value={phone} onChange={(e) => setPhone(e.target.value)} />
+              <FieldError errors={fieldErrs} name="phone" />
             </div>
           </div>
           <div className="row">

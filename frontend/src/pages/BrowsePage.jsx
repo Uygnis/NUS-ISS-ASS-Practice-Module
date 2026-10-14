@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApi } from '../api/useApi';
 import { CAR_TYPES } from '../api/catalog';
-import { Message, Empty, fmtMoney } from '../components/ui';
+import { Message, Empty, fmtMoney, todayISO, dateRangeError, rentalDays } from '../components/ui';
 
 export default function BrowsePage() {
   const api = useApi();
@@ -16,10 +16,29 @@ export default function BrowsePage() {
   const [busy, setBusy] = useState(false);
   const [bookingDraft, setBookingDraft] = useState(null); // {carId, location, startDate, endDate}
   const [bookErr, setBookErr] = useState('');
+  const [booking, setBooking] = useState(false);
+  const bookingPanel = useRef(null);
+  const today = todayISO();
+
+  // The booking form renders below the results grid. Without this, clicking
+  // "Book this car" on a long list changed nothing the user could see.
+  const draftCarId = bookingDraft?.carId;
+  useEffect(() => {
+    if (draftCarId == null || !bookingPanel.current) return;
+    bookingPanel.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    bookingPanel.current.querySelector('input:not([readonly])')?.focus({ preventScroll: true });
+  }, [draftCarId]);
 
   async function runSearch(e) {
     e.preventDefault();
     setErr('');
+    if (startDate || endDate) {
+      const rangeErr = dateRangeError(startDate, endDate);
+      if (rangeErr) {
+        setErr(rangeErr);
+        return;
+      }
+    }
     setBusy(true);
     try {
       const results = startDate && endDate
@@ -37,12 +56,18 @@ export default function BrowsePage() {
   function openBooking(car) {
     const carId = car.carId ?? car.id;
     setBookErr('');
-    setBookingDraft({ carId, pickupLocation: car.location || '', startDate, endDate });
+    setBookingDraft({ carId, car, pickupLocation: car.location || '', startDate, endDate });
   }
 
   async function submitBooking(e) {
     e.preventDefault();
     setBookErr('');
+    const rangeErr = dateRangeError(bookingDraft.startDate, bookingDraft.endDate);
+    if (rangeErr) {
+      setBookErr(rangeErr);
+      return;
+    }
+    setBooking(true);
     try {
       const booking = await api.reservations.create({
         carId: Number(bookingDraft.carId),
@@ -54,6 +79,8 @@ export default function BrowsePage() {
       navigate('/bookings', { state: { justCreated: booking.id } });
     } catch (e2) {
       setBookErr(e2.message);
+    } finally {
+      setBooking(false);
     }
   }
 
@@ -78,11 +105,11 @@ export default function BrowsePage() {
           </div>
           <div className="field">
             <label>Start date</label>
-            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+            <input type="date" value={startDate} min={today} onChange={(e) => setStartDate(e.target.value)} />
           </div>
           <div className="field">
             <label>End date</label>
-            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+            <input type="date" value={endDate} min={startDate || today} onChange={(e) => setEndDate(e.target.value)} />
           </div>
           <div className="field">
             <button type="submit" className="primary" disabled={busy}>{busy ? 'Searching…' : 'Search'}</button>
@@ -112,14 +139,16 @@ export default function BrowsePage() {
       </div>
 
       {bookingDraft && (
-        <div className="panel">
+        <div className="panel" ref={bookingPanel}>
           <h2>New booking</h2>
           <form onSubmit={submitBooking}>
             <div className="row">
               <div className="field">
-                <label>Car ID</label>
-                <input type="number" value={bookingDraft.carId}
-                  onChange={(e) => setBookingDraft((d) => ({ ...d, carId: e.target.value }))} required />
+                <label>Car</label>
+                <input
+                  value={`${bookingDraft.car.make} ${bookingDraft.car.model}${bookingDraft.car.year ? ` (${bookingDraft.car.year})` : ''} · ${bookingDraft.car.type} · ${fmtMoney(bookingDraft.car.dailyRate)}/day`}
+                  readOnly
+                />
               </div>
               <div className="field">
                 <label>Pickup location</label>
@@ -130,18 +159,24 @@ export default function BrowsePage() {
             <div className="row">
               <div className="field">
                 <label>Start date</label>
-                <input type="date" value={bookingDraft.startDate}
+                <input type="date" value={bookingDraft.startDate} min={today}
                   onChange={(e) => setBookingDraft((d) => ({ ...d, startDate: e.target.value }))} required />
               </div>
               <div className="field">
                 <label>End date</label>
-                <input type="date" value={bookingDraft.endDate}
+                <input type="date" value={bookingDraft.endDate} min={bookingDraft.startDate || today}
                   onChange={(e) => setBookingDraft((d) => ({ ...d, endDate: e.target.value }))} required />
               </div>
             </div>
+            {rentalDays(bookingDraft.startDate, bookingDraft.endDate) > 0 && (
+              <div className="hint" style={{ marginBottom: 12 }}>
+                {rentalDays(bookingDraft.startDate, bookingDraft.endDate)} day(s) × {fmtMoney(bookingDraft.car.dailyRate)} ={' '}
+                <strong>{fmtMoney(rentalDays(bookingDraft.startDate, bookingDraft.endDate) * Number(bookingDraft.car.dailyRate))}</strong>
+              </div>
+            )}
             <Message text={bookErr} kind="err" />
             <div className="row">
-              <button type="submit" className="primary">Confirm booking</button>
+              <button type="submit" className="primary" disabled={booking}>{booking ? 'Booking…' : 'Confirm booking'}</button>
               <button type="button" onClick={() => setBookingDraft(null)}>Cancel</button>
             </div>
           </form>

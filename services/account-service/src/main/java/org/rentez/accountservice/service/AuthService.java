@@ -8,6 +8,8 @@ import org.rentez.accountservice.security.JwtIssuer;
 import org.rentez.accountservice.web.dto.AuthResponse;
 import org.rentez.accountservice.web.dto.LoginRequest;
 import org.rentez.accountservice.web.dto.RegisterRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -16,6 +18,8 @@ import org.springframework.transaction.annotation.Transactional;
 /** Registration and login - the only two endpoints on this service that are reachable without a token. */
 @Service
 public class AuthService {
+
+	private static final Logger log = LoggerFactory.getLogger(AuthService.class);
 
 	private final UserRepository userRepository;
 	private final PasswordEncoder passwordEncoder;
@@ -61,13 +65,18 @@ public class AuthService {
 	 */
 	@Transactional
 	public AuthResponse login(LoginRequest request) {
-		User user = userRepository.findByEmail(request.email().toLowerCase())
-				.orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "Invalid email or password"));
+		User user = userRepository.findByEmail(request.email().toLowerCase()).orElse(null);
+		if (user == null) {
+			log.warn("event=LOGIN_FAILED reason=unknown_email actor={}", AuditService.mask(request.email()));
+			throw new ApiException(HttpStatus.UNAUTHORIZED, "Invalid email or password");
+		}
 
 		if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
+			log.warn("event=LOGIN_FAILED reason=bad_password User={}", user.getId());
 			throw new ApiException(HttpStatus.UNAUTHORIZED, "Invalid email or password");
 		}
 		if (!user.isEnabled()) {
+			log.warn("event=LOGIN_FAILED reason=disabled User={}", user.getId());
 			throw new ApiException(HttpStatus.FORBIDDEN, "This account has been disabled");
 		}
 

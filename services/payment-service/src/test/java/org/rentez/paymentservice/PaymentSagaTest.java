@@ -132,7 +132,7 @@ class PaymentSagaTest {
 						.header("Authorization", "Bearer " + TestTokens.customer(CUSTOMER_ID))
 						.contentType(MediaType.APPLICATION_JSON).content(payBody(bookingId, "0000123412341234")))
 				.andExpect(status().isPaymentRequired())
-				.andExpect(jsonPath("$.message").value("Payment was declined by the gateway"));
+				.andExpect(jsonPath("$.message").value("Your payment was declined. Please check your card details or try another method."));
 
 		List<Payment> attempts = paymentRepository.findByBookingIdOrderByCreatedAtDesc(bookingId);
 		assertThat(attempts).hasSize(1);
@@ -170,7 +170,7 @@ class PaymentSagaTest {
 						.header("Authorization", "Bearer " + TestTokens.customer(4242L))
 						.contentType(MediaType.APPLICATION_JSON).content(payBody(bookingId, null)))
 				.andExpect(status().isForbidden())
-				.andExpect(jsonPath("$.message").value("This booking does not belong to you"));
+				.andExpect(jsonPath("$.message").value("You can only pay for your own bookings."));
 
 		assertThat(paymentRepository.findByBookingIdOrderByCreatedAtDesc(bookingId)).isEmpty();
 	}
@@ -186,7 +186,7 @@ class PaymentSagaTest {
 						.contentType(MediaType.APPLICATION_JSON).content(payBody(bookingId, null)))
 				.andExpect(status().isConflict())
 				.andExpect(jsonPath("$.message")
-						.value("This booking is not awaiting payment (status: CONFIRMED)"));
+						.value("This booking has already been paid."));
 	}
 
 	/** Reservation unreachable before any charge is the safe failure: nothing to undo. */
@@ -250,7 +250,7 @@ class PaymentSagaTest {
 						.header("Authorization", "Bearer " + TestTokens.customer(CUSTOMER_ID))
 						.contentType(MediaType.APPLICATION_JSON).content(payBody(bookingId, "4111111111111111")))
 				.andExpect(status().isConflict())
-				.andExpect(jsonPath("$.message").value("This booking has already been paid"));
+				.andExpect(jsonPath("$.message").value("This booking has already been paid. You can find the receipt under My payments."));
 
 		long succeeded = paymentRepository.findByBookingIdOrderByCreatedAtDesc(bookingId).stream()
 				.filter(p -> p.getStatus() == PaymentStatus.SUCCESS)

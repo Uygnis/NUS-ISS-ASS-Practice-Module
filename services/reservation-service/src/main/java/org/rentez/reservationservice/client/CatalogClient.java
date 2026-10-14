@@ -50,7 +50,7 @@ public class CatalogClient {
 					.header(HttpHeaders.AUTHORIZATION, "Bearer " + tokens.token())
 					.retrieve()
 					.onStatus(status -> status.value() == 404, (req, res) -> {
-						throw new ApiException(HttpStatus.NOT_FOUND, "No car with id " + carId);
+						throw new ApiException(HttpStatus.NOT_FOUND, "Car #" + carId + " was not found. It may have been removed from the fleet.");
 					})
 					.body(InternalCarView.class);
 
@@ -63,7 +63,7 @@ public class CatalogClient {
 			throw ex;
 		}
 		catch (RestClientException ex) {
-			throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "Catalog service is unavailable");
+			throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "Car information is temporarily unavailable. Please try again in a moment.");
 		}
 	}
 
@@ -88,7 +88,7 @@ public class CatalogClient {
 			return cars == null ? List.of() : List.of(cars);
 		}
 		catch (RestClientException ex) {
-			throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "Catalog service is unavailable");
+			throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "Car information is temporarily unavailable. Please try again in a moment.");
 		}
 	}
 }

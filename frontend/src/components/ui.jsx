@@ -26,3 +26,34 @@ export function fmtMoney(n) {
 export function fmtDate(d) {
   return d || '—';
 }
+
+/** Today as YYYY-MM-DD in the user's local time zone, for <input type="date" min>. */
+export function todayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** Same rule as the backend: an empty or reversed range, or a start in the past, is rejected. */
+export function dateRangeError(startDate, endDate, { allowPastStart = false } = {}) {
+  if (!startDate || !endDate) return 'Please choose both a start and an end date.';
+  if (!allowPastStart && startDate < todayISO()) return "The start date can't be in the past. Please pick today or a later date.";
+  if (endDate < startDate) return 'The end date must be on or after the start date.';
+  return '';
+}
+
+/** Inclusive day count, matching reservation-service's pricing. */
+export function rentalDays(startDate, endDate) {
+  if (!startDate || !endDate || endDate < startDate) return 0;
+  return Math.round((new Date(endDate) - new Date(startDate)) / 86400000) + 1;
+}
+
+/** Inline message under one input, from the backend's fieldErrors map. */
+export function FieldError({ errors, name }) {
+  const text = errors && errors[name];
+  if (!text) return null;
+  return <div className="field-err" role="alert">{text}</div>;
+}
+
+export function fieldClass(errors, name) {
+  return errors && errors[name] ? 'field invalid' : 'field';
+}

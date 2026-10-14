@@ -93,6 +93,6 @@ public class UserService {
 
 	private User requireUser(Long userId) {
 		return userRepository.findById(userId)
-				.orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "No such user"));
+				.orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "We couldn't find that user. They may have been removed."));
 	}
 }

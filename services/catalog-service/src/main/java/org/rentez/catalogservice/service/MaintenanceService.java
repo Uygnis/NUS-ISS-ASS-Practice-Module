@@ -48,7 +48,7 @@ public class MaintenanceService {
 	@Transactional
 	public MaintenanceResponse schedule(MaintenanceRequest request, String actorEmail) {
 		Car car = carRepository.findById(request.carId())
-				.orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "No car with id " + request.carId()));
+				.orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Car #" + request.carId() + " was not found. It may have been removed from the fleet."));
 
 		car.setStatus(CarStatus.MAINTENANCE);
 		carRepository.save(car);
@@ -65,7 +65,7 @@ public class MaintenanceService {
 	@Transactional
 	public MaintenanceResponse updateStatus(Long recordId, MaintenanceStatus status, String actorEmail) {
 		MaintenanceRecord record = maintenanceRepository.findById(recordId)
-				.orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "No maintenance record with id " + recordId));
+				.orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Maintenance record #" + recordId + " was not found."));
 
 		record.setStatus(status);
 		if (status == MaintenanceStatus.COMPLETED) {

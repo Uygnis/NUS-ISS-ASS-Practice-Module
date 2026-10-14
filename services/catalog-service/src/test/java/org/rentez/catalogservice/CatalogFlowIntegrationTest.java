@@ -242,6 +242,6 @@ class CatalogFlowIntegrationTest {
 	void unknownCarIsANotFound() throws Exception {
 		mvc().perform(get("/api/catalog/cars/999999"))
 				.andExpect(status().isNotFound())
-				.andExpect(jsonPath("$.message").value("No car with id 999999"));
+				.andExpect(jsonPath("$.message").value("Car #999999 was not found. It may have been removed from the fleet."));
 	}
 }

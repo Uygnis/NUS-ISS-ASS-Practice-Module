@@ -66,13 +66,14 @@ public class BookingService {
 	 * Found by perf/load.js; see docs/quality-attributes.md.
 	 */
 	public BookingResponse create(Long customerId, String customerEmail, BookingRequest request) {
+		requireNotInPast(request.startDate());
 		requireOrderedDates(request.startDate(), request.endDate());
 
 		// Was carRepository.findById(...) in-process. Catalog is still the source
 		// of truth for rentability and price; we ask once and then snapshot.
 		InternalCarView car = catalogClient.getCar(request.carId());
 		if (!car.rentable()) {
-			throw new ApiException(HttpStatus.CONFLICT, "This car is not currently rentable");
+			throw new ApiException(HttpStatus.CONFLICT, "This car isn't available for booking right now. Please choose another car.");
 		}
 
 		BigDecimal total = priceFor(car.dailyRate(), request.startDate(), request.endDate());
@@ -102,7 +103,12 @@ public class BookingService {
 		Booking booking = requireOwned(customerId, bookingId);
 
 		if (booking.getStatus() == BookingStatus.CANCELLED || booking.getStatus() == BookingStatus.COMPLETED) {
-			throw new ApiException(HttpStatus.CONFLICT, "Cannot modify a " + booking.getStatus() + " booking");
+			throw new ApiException(HttpStatus.CONFLICT, booking.getStatus() == BookingStatus.CANCELLED
+					? "This booking was cancelled and can no longer be changed."
+					: "This rental is already completed and can no longer be changed.");
+		}
+		if (!request.startDate().equals(booking.getStartDate())) {
+			requireNotInPast(request.startDate());
 		}
 		requireOrderedDates(request.startDate(), request.endDate());
 
@@ -174,7 +180,7 @@ public class BookingService {
 			return BookingResponse.from(booking);
 		}
 		if (booking.getStatus() == BookingStatus.COMPLETED) {
-			throw new ApiException(HttpStatus.CONFLICT, "Cannot cancel a completed booking");
+			throw new ApiException(HttpStatus.CONFLICT, "This rental is already completed, so it can't be cancelled.");
 		}
 
 		booking.setStatus(BookingStatus.CANCELLED);
@@ -319,7 +325,7 @@ public class BookingService {
 			// Same message and status the monolith produced from its pre-check,
 			// so the API contract is unchanged even though the mechanism is not.
 			throw new ApiException(HttpStatus.CONFLICT,
-					"This car is already booked for part of that date range");
+					"This car is already booked for some of those dates. Please choose different dates or another car.");
 		}
 	}
 
@@ -329,21 +335,32 @@ public class BookingService {
 		return dailyRate.multiply(BigDecimal.valueOf(days));
 	}
 
+	/**
+	 * Create, and modify when the start date moves. A booking already under way
+	 * keeps its (past) start date, so an unchanged start is not re-checked.
+	 */
+	private void requireNotInPast(LocalDate startDate) {
+		if (startDate.isBefore(LocalDate.now())) {
+			throw new ApiException(HttpStatus.BAD_REQUEST,
+					"The start date can't be in the past. Please pick today or a later date.");
+		}
+	}
+
 	private void requireOrderedDates(LocalDate startDate, LocalDate endDate) {
 		if (endDate.isBefore(startDate)) {
-			throw new ApiException(HttpStatus.BAD_REQUEST, "endDate cannot be before startDate");
+			throw new ApiException(HttpStatus.BAD_REQUEST, "The end date must be on or after the start date.");
 		}
 	}
 
 	private Booking requireBooking(Long bookingId) {
 		return bookingRepository.findById(bookingId)
-				.orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "No booking with id " + bookingId));
+				.orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Booking #" + bookingId + " was not found."));
 	}
 
 	private Booking requireOwned(Long customerId, Long bookingId) {
 		Booking booking = requireBooking(bookingId);
 		if (!booking.isOwnedBy(customerId)) {
-			throw new ApiException(HttpStatus.FORBIDDEN, "This booking does not belong to you");
+			throw new ApiException(HttpStatus.FORBIDDEN, "You can only manage your own bookings.");
 		}
 		return booking;
 	}

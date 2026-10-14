@@ -67,6 +67,8 @@ input:focus,select:focus,textarea:focus,button:focus-visible{
 }
 label{font-size:13px;color:var(--steel);display:block;margin-bottom:3px;}
 .field{margin-bottom:12px;}
+.field.invalid input,.field.invalid select{border-color:var(--route-red);}
+.field-err{color:var(--route-red);font-size:12px;margin-top:4px;}
 .row{display:flex;gap:12px;flex-wrap:wrap;}
 .row > .field{flex:1;min-width:150px;}
 

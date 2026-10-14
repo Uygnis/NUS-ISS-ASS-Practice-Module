@@ -51,7 +51,7 @@ public class PaymentTransactions {
 	@Transactional(readOnly = true)
 	public Payment require(Long paymentId) {
 		return paymentRepository.findById(paymentId)
-				.orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "No payment with id " + paymentId));
+				.orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Payment #" + paymentId + " was not found."));
 	}
 
 	/**

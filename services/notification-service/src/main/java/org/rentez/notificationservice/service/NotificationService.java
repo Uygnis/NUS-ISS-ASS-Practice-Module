@@ -103,7 +103,7 @@ public class NotificationService {
 						"No notification with id " + notificationId));
 
 		if (!notification.isOwnedBy(recipientId)) {
-			throw new ApiException(HttpStatus.FORBIDDEN, "This notification does not belong to you");
+			throw new ApiException(HttpStatus.FORBIDDEN, "You can only manage your own notifications.");
 		}
 
 		notification.setRead(true);

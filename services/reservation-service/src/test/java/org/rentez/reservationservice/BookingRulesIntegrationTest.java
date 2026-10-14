@@ -92,7 +92,7 @@ class BookingRulesIntegrationTest {
 						.header("Authorization", "Bearer " + TestTokens.customer(CUSTOMER_ID))
 						.contentType(MediaType.APPLICATION_JSON)
 						.content("""
-								{"carId":42,"startDate":"2026-09-01","endDate":"2026-09-03","pickupLocation":"Jurong"}
+								{"carId":42,"startDate":"2036-09-01","endDate":"2036-09-03","pickupLocation":"Jurong"}
 								"""))
 				.andExpect(status().isCreated())
 				.andExpect(jsonPath("$.totalAmount").value(240.00))
@@ -109,7 +109,7 @@ class BookingRulesIntegrationTest {
 						.header("Authorization", "Bearer " + TestTokens.customer(CUSTOMER_ID))
 						.contentType(MediaType.APPLICATION_JSON)
 						.content("""
-								{"carId":42,"startDate":"2026-09-05","endDate":"2026-09-05"}
+								{"carId":42,"startDate":"2036-09-05","endDate":"2036-09-05"}
 								"""))
 				.andExpect(status().isCreated())
 				.andExpect(jsonPath("$.totalAmount").value(80.00));
@@ -121,10 +121,23 @@ class BookingRulesIntegrationTest {
 						.header("Authorization", "Bearer " + TestTokens.customer(CUSTOMER_ID))
 						.contentType(MediaType.APPLICATION_JSON)
 						.content("""
-								{"carId":42,"startDate":"2026-09-10","endDate":"2026-09-08"}
+								{"carId":42,"startDate":"2036-09-10","endDate":"2036-09-08"}
 								"""))
 				.andExpect(status().isBadRequest())
-				.andExpect(jsonPath("$.message").value("endDate cannot be before startDate"));
+				.andExpect(jsonPath("$.message").value("The end date must be on or after the start date."));
+	}
+
+	@Test
+	void rejectsAStartDateInThePast() throws Exception {
+		mvc.perform(post("/api/reservations/bookings")
+						.header("Authorization", "Bearer " + TestTokens.customer(CUSTOMER_ID))
+						.contentType(MediaType.APPLICATION_JSON)
+						.content("""
+								{"carId":42,"startDate":"2020-01-01","endDate":"2020-01-02"}
+								"""))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.message").value(
+						"The start date can't be in the past. Please pick today or a later date."));
 	}
 
 	@Test
@@ -135,25 +148,25 @@ class BookingRulesIntegrationTest {
 						.header("Authorization", "Bearer " + TestTokens.customer(CUSTOMER_ID))
 						.contentType(MediaType.APPLICATION_JSON)
 						.content("""
-								{"carId":99,"startDate":"2026-09-01","endDate":"2026-09-02"}
+								{"carId":99,"startDate":"2036-09-01","endDate":"2036-09-02"}
 								"""))
 				.andExpect(status().isConflict())
-				.andExpect(jsonPath("$.message").value("This car is not currently rentable"));
+				.andExpect(jsonPath("$.message").value("This car isn't available for booking right now. Please choose another car."));
 	}
 
 	@Test
 	void propagatesAnUnknownCarAsNotFound() throws Exception {
 		given(catalogClient.getCar(1234L))
-				.willThrow(new ApiException(HttpStatus.NOT_FOUND, "No car with id 1234"));
+				.willThrow(new ApiException(HttpStatus.NOT_FOUND, "Car #1234 was not found. It may have been removed from the fleet."));
 
 		mvc.perform(post("/api/reservations/bookings")
 						.header("Authorization", "Bearer " + TestTokens.customer(CUSTOMER_ID))
 						.contentType(MediaType.APPLICATION_JSON)
 						.content("""
-								{"carId":1234,"startDate":"2026-09-01","endDate":"2026-09-02"}
+								{"carId":1234,"startDate":"2036-09-01","endDate":"2036-09-02"}
 								"""))
 				.andExpect(status().isNotFound())
-				.andExpect(jsonPath("$.message").value("No car with id 1234"));
+				.andExpect(jsonPath("$.message").value("Car #1234 was not found. It may have been removed from the fleet."));
 	}
 
 	/** A catalog outage must not masquerade as a business error. */
@@ -166,7 +179,7 @@ class BookingRulesIntegrationTest {
 						.header("Authorization", "Bearer " + TestTokens.customer(CUSTOMER_ID))
 						.contentType(MediaType.APPLICATION_JSON)
 						.content("""
-								{"carId":77,"startDate":"2026-09-01","endDate":"2026-09-02"}
+								{"carId":77,"startDate":"2036-09-01","endDate":"2036-09-02"}
 								"""))
 				.andExpect(status().isServiceUnavailable());
 	}
@@ -176,30 +189,30 @@ class BookingRulesIntegrationTest {
 	@Test
 	void refusesAnOverlappingBookingForTheSameCar() throws Exception {
 		String token = TestTokens.customer(CUSTOMER_ID);
-		book(token, CAR_ID, "2026-10-01", "2026-10-05");
+		book(token, CAR_ID, "2036-10-01", "2036-10-05");
 
 		mvc.perform(post("/api/reservations/bookings")
 						.header("Authorization", "Bearer " + token)
 						.contentType(MediaType.APPLICATION_JSON)
 						.content("""
-								{"carId":42,"startDate":"2026-10-04","endDate":"2026-10-08"}
+								{"carId":42,"startDate":"2036-10-04","endDate":"2036-10-08"}
 								"""))
 				.andExpect(status().isConflict())
 				.andExpect(jsonPath("$.message")
-						.value("This car is already booked for part of that date range"));
+						.value("This car is already booked for some of those dates. Please choose different dates or another car."));
 	}
 
 	/** Adjacent, not overlapping: the day after an end date is free. */
 	@Test
 	void allowsABookingThatStartsTheDayAfterAnotherEnds() throws Exception {
 		String token = TestTokens.customer(CUSTOMER_ID);
-		book(token, CAR_ID, "2026-11-01", "2026-11-03");
+		book(token, CAR_ID, "2036-11-01", "2036-11-03");
 
 		mvc.perform(post("/api/reservations/bookings")
 						.header("Authorization", "Bearer " + token)
 						.contentType(MediaType.APPLICATION_JSON)
 						.content("""
-								{"carId":42,"startDate":"2026-11-04","endDate":"2026-11-06"}
+								{"carId":42,"startDate":"2036-11-04","endDate":"2036-11-06"}
 								"""))
 				.andExpect(status().isCreated());
 	}
@@ -208,7 +221,7 @@ class BookingRulesIntegrationTest {
 	@Test
 	void cancellingReleasesTheDatesForRebooking() throws Exception {
 		String token = TestTokens.customer(CUSTOMER_ID);
-		String booked = book(token, CAR_ID, "2026-12-01", "2026-12-03");
+		String booked = book(token, CAR_ID, "2036-12-01", "2036-12-03");
 
 		mvc.perform(delete("/api/reservations/bookings/" + id(booked))
 						.header("Authorization", "Bearer " + token))
@@ -219,7 +232,7 @@ class BookingRulesIntegrationTest {
 						.header("Authorization", "Bearer " + token)
 						.contentType(MediaType.APPLICATION_JSON)
 						.content("""
-								{"carId":42,"startDate":"2026-12-01","endDate":"2026-12-03"}
+								{"carId":42,"startDate":"2036-12-01","endDate":"2036-12-03"}
 								"""))
 				.andExpect(status().isCreated());
 	}
@@ -229,7 +242,7 @@ class BookingRulesIntegrationTest {
 	@Test
 	void modifyRepricesAndFlagsAConfirmedBookingAsModified() throws Exception {
 		String token = TestTokens.customer(CUSTOMER_ID);
-		String booked = book(token, CAR_ID, "2027-01-01", "2027-01-02");
+		String booked = book(token, CAR_ID, "2037-01-01", "2037-01-02");
 		String bookingId = id(booked);
 
 		// Confirm it first, so the CONFIRMED -> MODIFIED transition is exercised.
@@ -242,7 +255,7 @@ class BookingRulesIntegrationTest {
 						.header("Authorization", "Bearer " + token)
 						.contentType(MediaType.APPLICATION_JSON)
 						.content("""
-								{"startDate":"2027-01-01","endDate":"2027-01-04","pickupLocation":"Changi"}
+								{"startDate":"2037-01-01","endDate":"2037-01-04","pickupLocation":"Changi"}
 								"""))
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.status").value("MODIFIED"))
@@ -253,7 +266,7 @@ class BookingRulesIntegrationTest {
 	@Test
 	void modifyRefusesACancelledBooking() throws Exception {
 		String token = TestTokens.customer(CUSTOMER_ID);
-		String booked = book(token, CAR_ID, "2027-02-01", "2027-02-02");
+		String booked = book(token, CAR_ID, "2037-02-01", "2037-02-02");
 		String bookingId = id(booked);
 
 		mvc.perform(delete("/api/reservations/bookings/" + bookingId)
@@ -263,41 +276,41 @@ class BookingRulesIntegrationTest {
 						.header("Authorization", "Bearer " + token)
 						.contentType(MediaType.APPLICATION_JSON)
 						.content("""
-								{"startDate":"2027-02-01","endDate":"2027-02-05"}
+								{"startDate":"2037-02-01","endDate":"2037-02-05"}
 								"""))
 				.andExpect(status().isConflict())
-				.andExpect(jsonPath("$.message").value("Cannot modify a CANCELLED booking"));
+				.andExpect(jsonPath("$.message").value("This booking was cancelled and can no longer be changed."));
 	}
 
 	/** Re-dating onto another booking's dates must be refused. */
 	@Test
 	void modifyRefusesDatesHeldByAnotherBooking() throws Exception {
 		String token = TestTokens.customer(CUSTOMER_ID);
-		book(token, CAR_ID, "2027-03-10", "2027-03-12");
-		String second = book(token, CAR_ID, "2027-03-20", "2027-03-22");
+		book(token, CAR_ID, "2037-03-10", "2037-03-12");
+		String second = book(token, CAR_ID, "2037-03-20", "2037-03-22");
 
 		mvc.perform(put("/api/reservations/bookings/" + id(second))
 						.header("Authorization", "Bearer " + token)
 						.contentType(MediaType.APPLICATION_JSON)
 						.content("""
-								{"startDate":"2027-03-11","endDate":"2027-03-13"}
+								{"startDate":"2037-03-11","endDate":"2037-03-13"}
 								"""))
 				.andExpect(status().isConflict())
 				.andExpect(jsonPath("$.message")
-						.value("This car is already booked for part of that date range"));
+						.value("This car is already booked for some of those dates. Please choose different dates or another car."));
 	}
 
 	/** Re-dating within a booking's own held range must NOT collide with itself. */
 	@Test
 	void modifyCanShrinkOrShiftWithinItsOwnDates() throws Exception {
 		String token = TestTokens.customer(CUSTOMER_ID);
-		String booked = book(token, CAR_ID, "2027-04-01", "2027-04-10");
+		String booked = book(token, CAR_ID, "2037-04-01", "2037-04-10");
 
 		mvc.perform(put("/api/reservations/bookings/" + id(booked))
 						.header("Authorization", "Bearer " + token)
 						.contentType(MediaType.APPLICATION_JSON)
 						.content("""
-								{"startDate":"2027-04-03","endDate":"2027-04-05"}
+								{"startDate":"2037-04-03","endDate":"2037-04-05"}
 								"""))
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.totalAmount").value(240.00));
@@ -309,12 +322,12 @@ class BookingRulesIntegrationTest {
 	void aCustomerCannotReadOrTouchAnotherCustomersBooking() throws Exception {
 		String owner = TestTokens.customer(CUSTOMER_ID);
 		String intruder = TestTokens.customer(999L);
-		String bookingId = id(book(owner, CAR_ID, "2027-05-01", "2027-05-02"));
+		String bookingId = id(book(owner, CAR_ID, "2037-05-01", "2037-05-02"));
 
 		mvc.perform(get("/api/reservations/bookings/" + bookingId)
 						.header("Authorization", "Bearer " + intruder))
 				.andExpect(status().isForbidden())
-				.andExpect(jsonPath("$.message").value("This booking does not belong to you"));
+				.andExpect(jsonPath("$.message").value("You can only manage your own bookings."));
 
 		mvc.perform(delete("/api/reservations/bookings/" + bookingId)
 						.header("Authorization", "Bearer " + intruder))
@@ -324,7 +337,7 @@ class BookingRulesIntegrationTest {
 						.header("Authorization", "Bearer " + intruder)
 						.contentType(MediaType.APPLICATION_JSON)
 						.content("""
-								{"startDate":"2027-05-01","endDate":"2027-05-09"}
+								{"startDate":"2037-05-01","endDate":"2037-05-09"}
 								"""))
 				.andExpect(status().isForbidden());
 	}
@@ -332,15 +345,15 @@ class BookingRulesIntegrationTest {
 	@Test
 	void myBookingsReturnsOnlyMineNewestFirst() throws Exception {
 		String mine = TestTokens.customer(4242L);
-		book(mine, CAR_ID, "2027-06-01", "2027-06-02");
-		book(mine, CAR_ID, "2027-06-10", "2027-06-11");
-		book(TestTokens.customer(CUSTOMER_ID), CAR_ID, "2027-06-20", "2027-06-21");
+		book(mine, CAR_ID, "2037-06-01", "2037-06-02");
+		book(mine, CAR_ID, "2037-06-10", "2037-06-11");
+		book(TestTokens.customer(CUSTOMER_ID), CAR_ID, "2037-06-20", "2037-06-21");
 
 		mvc.perform(get("/api/reservations/bookings/me").header("Authorization", "Bearer " + mine))
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.length()").value(2))
-				.andExpect(jsonPath("$[0].startDate").value("2027-06-10"))
-				.andExpect(jsonPath("$[1].startDate").value("2027-06-01"));
+				.andExpect(jsonPath("$[0].startDate").value("2037-06-10"))
+				.andExpect(jsonPath("$[1].startDate").value("2037-06-01"));
 	}
 
 	@Test
@@ -348,7 +361,7 @@ class BookingRulesIntegrationTest {
 		mvc.perform(get("/api/reservations/bookings/987654")
 						.header("Authorization", "Bearer " + TestTokens.customer(CUSTOMER_ID)))
 				.andExpect(status().isNotFound())
-				.andExpect(jsonPath("$.message").value("No booking with id 987654"));
+				.andExpect(jsonPath("$.message").value("Booking #987654 was not found."));
 	}
 
 	// ------------------------------------------------------------------ cancel
@@ -357,7 +370,7 @@ class BookingRulesIntegrationTest {
 	@Test
 	void cancellingAnAlreadyCancelledBookingIsIdempotent() throws Exception {
 		String token = TestTokens.customer(CUSTOMER_ID);
-		String bookingId = id(book(token, CAR_ID, "2027-07-01", "2027-07-02"));
+		String bookingId = id(book(token, CAR_ID, "2037-07-01", "2037-07-02"));
 
 		mvc.perform(delete("/api/reservations/bookings/" + bookingId)
 				.header("Authorization", "Bearer " + token)).andExpect(status().isOk());
@@ -374,7 +387,7 @@ class BookingRulesIntegrationTest {
 	@Test
 	void confirmIsIdempotentAndServiceOnly() throws Exception {
 		String token = TestTokens.customer(CUSTOMER_ID);
-		String bookingId = id(book(token, CAR_ID, "2027-08-01", "2027-08-02"));
+		String bookingId = id(book(token, CAR_ID, "2037-08-01", "2037-08-02"));
 
 		mvc.perform(post("/api/reservations/internal/bookings/" + bookingId + "/confirm")
 						.header("Authorization", "Bearer " + TestTokens.service()))
@@ -395,7 +408,7 @@ class BookingRulesIntegrationTest {
 	@Test
 	void confirmRefusesACancelledBooking() throws Exception {
 		String token = TestTokens.customer(CUSTOMER_ID);
-		String bookingId = id(book(token, CAR_ID, "2027-09-01", "2027-09-02"));
+		String bookingId = id(book(token, CAR_ID, "2037-09-01", "2037-09-02"));
 
 		mvc.perform(delete("/api/reservations/bookings/" + bookingId)
 				.header("Authorization", "Bearer " + token)).andExpect(status().isOk());
@@ -413,7 +426,7 @@ class BookingRulesIntegrationTest {
 	 */
 	@Test
 	void internalCancelSkipsTheOwnershipCheck() throws Exception {
-		String bookingId = id(book(TestTokens.customer(CUSTOMER_ID), CAR_ID, "2027-10-01", "2027-10-02"));
+		String bookingId = id(book(TestTokens.customer(CUSTOMER_ID), CAR_ID, "2037-10-01", "2037-10-02"));
 
 		mvc.perform(post("/api/reservations/internal/bookings/" + bookingId + "/cancel")
 						.header("Authorization", "Bearer " + TestTokens.service()))
