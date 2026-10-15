@@ -155,7 +155,7 @@ public class CarService {
 	@Transactional
 	public CarResponse setStatus(Long id, CarStatus status, String actorEmail, boolean actorIsAdmin) {
 		if (!actorIsAdmin && !STAFF_ASSIGNABLE.contains(status)) {
-			throw new ApiException(HttpStatus.FORBIDDEN, "Staff may only set a car to AVAILABLE or MAINTENANCE");
+			throw new ApiException(HttpStatus.FORBIDDEN, "Staff can only mark a car as Available or In maintenance. Ask an admin for other changes.");
 		}
 		Car car = requireCar(id);
 		car.setStatus(status);
@@ -167,6 +167,6 @@ public class CarService {
 
 	private Car requireCar(Long id) {
 		return carRepository.findById(id)
-				.orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "No car with id " + id));
+				.orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Car #" + id + " was not found. It may have been removed from the fleet."));
 	}
 }

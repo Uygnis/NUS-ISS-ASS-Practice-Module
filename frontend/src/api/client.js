@@ -33,7 +33,8 @@ export async function apiRequest(base, path, { method = 'GET', body = null, quer
   try {
     res = await fetch(url, opts);
   } catch (e) {
-    throw new Error(`Could not reach ${base} — is the service running and reachable? (${e.message})`);
+    console.error(`Could not reach ${base || 'the gateway'}`, e);
+    throw new Error("We can't reach RentEz right now. Please check your connection and try again.", { cause: e });
   }
 
   const text = await res.text();
@@ -47,11 +48,24 @@ export async function apiRequest(base, path, { method = 'GET', body = null, quer
   }
 
   if (!res.ok) {
+    // A 401 on a request that carried a token means the session ran out. The
+    // login call itself sends no token, so "Invalid email or password" still
+    // reaches the login form unchanged.
+    if (res.status === 401 && auth?.token) {
+      window.dispatchEvent(new Event('rentez:session-expired'));
+      throw new Error('Your session has expired. Please sign in again.');
+    }
     const message =
-      (data && (data.message || data.error || data.detail)) ||
-      (typeof data === 'string' ? data : null) ||
+      (data && data.message) ||
+      (res.status === 403 ? "You don't have access to this." : null) ||
+      (res.status >= 500 ? 'Something went wrong on our side. Please try again in a moment.' : null) ||
+      (data && (data.error || data.detail)) ||
+      (typeof data === 'string' && data.length < 200 ? data : null) ||
       `Request failed (${res.status})`;
-    throw new Error(message);
+    const err = new Error(message);
+    err.status = res.status;
+    err.fieldErrors = (data && data.fieldErrors) || {};
+    throw err;
   }
   return data;
 }

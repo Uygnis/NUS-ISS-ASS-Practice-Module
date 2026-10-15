@@ -1,6 +1,6 @@
-import { createContext, useContext, useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
+import { AuthContext } from './useAuth';
 
-const AuthContext = createContext(null);
 const STORAGE_KEY = 'rentez_auth';
 
 function loadAuth() {
@@ -40,15 +40,20 @@ export function AuthProvider({ children }) {
     setAuth(null);
   }, []);
 
+  // Fired by api/client.js when a signed-in request comes back 401. Clearing
+  // the session sends ProtectedRoute to /login, which shows the notice.
+  useEffect(() => {
+    function expired() {
+      try { sessionStorage.setItem('rentez_session_expired', '1'); } catch { /* storage blocked */ }
+      logout();
+    }
+    window.addEventListener('rentez:session-expired', expired);
+    return () => window.removeEventListener('rentez:session-expired', expired);
+  }, [logout]);
+
   return (
     <AuthContext.Provider value={{ auth, login, logout, updateName }}>
       {children}
     </AuthContext.Provider>
   );
-}
-
-export function useAuth() {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
-  return ctx;
 }

@@ -1,12 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useApi } from "../api/useApi";
-import {
-  Message,
-  Empty,
-  StatusPill,
-  fmtMoney,
-  USER_STATUS_CLASS,
-} from "../components/ui";
+import { Message, Empty, Skeleton, StatusPill } from "../components/ui";
+import { fmtMoney, USER_STATUS_CLASS } from "../components/format";
 import { StatCard } from "./FleetPage";
 
 const SUBS = [
@@ -42,18 +37,26 @@ function UsersPanel() {
   const [users, setUsers] = useState(null);
   const [err, setErr] = useState("");
 
-  async function load() {
-    setErr("");
-    try {
-      const list = await api.accounts.listUsers();
-      setUsers(list);
-    } catch (e) {
-      setErr(e.message);
-    }
-  }
+  // load() asks for a refetch; the effect does it. Fetching inside the
+  // effect (not via a local async function) lets a stale response be ignored.
+  const [reloadKey, setReloadKey] = useState(0);
+  const load = () => setReloadKey((k) => k + 1);
+
   useEffect(() => {
-    load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */
-  }, []);
+    let active = true;
+    api.accounts.listUsers()
+      .then((data) => {
+        if (!active) return;
+        setErr("");
+        setUsers(data);
+      })
+      .catch((e) => {
+        if (active) setErr(e.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [api, reloadKey]);
 
   async function setRole(id, role) {
     try {
@@ -77,7 +80,7 @@ function UsersPanel() {
       <h2>Users</h2>
       <Message text={err} kind="err" />
       {users === null ? (
-        <div className="hint">Loading…</div>
+        <Skeleton rows={4} />
       ) : (
         <table>
           <thead>
@@ -174,7 +177,7 @@ function SummaryPanel() {
       <Message text={err} kind="err" />
 
       {!summary ? (
-        <div className="hint">Loading…</div>
+        <Skeleton rows={4} />
       ) : (
         <>
           {summary.partial && (
@@ -233,6 +236,8 @@ function SummaryPanel() {
   );
 }
 
+const AUDIT_SOURCES = ["Accounts", "Catalog", "Reservations", "Payments"];
+
 function AuditPanel() {
   const api = useApi();
   const [service, setService] = useState("Accounts");
@@ -240,25 +245,36 @@ function AuditPanel() {
   const [entries, setEntries] = useState(null);
   const [err, setErr] = useState("");
 
-  const services = {
-    Accounts: () => api.accounts.auditLog(limit),
-    Catalog: () => api.catalog.auditLog(limit),
-    Reservations: () => api.reservations.auditLog(limit),
-    Payments: () => api.payments.auditLog(limit),
+  // The limit applies when Load is pressed; picking a service loads at once.
+  const [appliedLimit, setAppliedLimit] = useState(limit);
+  const [reloadKey, setReloadKey] = useState(0);
+  const load = () => {
+    setAppliedLimit(limit);
+    setReloadKey((k) => k + 1);
   };
 
-  async function load() {
-    setErr("");
-    try {
-      const list = await services[service]();
-      setEntries(list);
-    } catch (e) {
-      setErr(e.message);
-    }
-  }
   useEffect(() => {
-    load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */
-  }, [service]);
+    let active = true;
+    const sources = {
+      Accounts: api.accounts,
+      Catalog: api.catalog,
+      Reservations: api.reservations,
+      Payments: api.payments,
+    };
+    sources[service]
+      .auditLog(appliedLimit)
+      .then((data) => {
+        if (!active) return;
+        setErr("");
+        setEntries(data);
+      })
+      .catch((e) => {
+        if (active) setErr(e.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [api, service, appliedLimit, reloadKey]);
 
   return (
     <div className="panel">
@@ -267,7 +283,7 @@ function AuditPanel() {
         <div className="field">
           <label>Service</label>
           <select value={service} onChange={(e) => setService(e.target.value)}>
-            {Object.keys(services).map((s) => (
+            {AUDIT_SOURCES.map((s) => (
               <option key={s} value={s}>
                 {s}
               </option>
@@ -290,7 +306,7 @@ function AuditPanel() {
       </div>
       <Message text={err} kind="err" />
       {entries === null ? (
-        <div className="hint">Loading…</div>
+        <Skeleton rows={4} />
       ) : entries.length === 0 ? (
         <Empty>No audit entries.</Empty>
       ) : (

@@ -200,7 +200,7 @@ class NotificationIngestTest {
 		mvc.perform(put("/api/notifications/" + notificationId + "/read")
 						.header("Authorization", "Bearer " + TestTokens.customer(999L)))
 				.andExpect(status().isForbidden())
-				.andExpect(jsonPath("$.message").value("This notification does not belong to you"));
+				.andExpect(jsonPath("$.message").value("You can only manage your own notifications."));
 
 		mvc.perform(put("/api/notifications/" + notificationId + "/read")
 						.header("Authorization", "Bearer " + TestTokens.customer(owner)))

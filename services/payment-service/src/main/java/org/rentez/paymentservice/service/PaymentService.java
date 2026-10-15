@@ -86,11 +86,11 @@ public class PaymentService {
 		BookingView booking = reservationClient.getBooking(request.bookingId());
 
 		if (!booking.isOwnedBy(customerId)) {
-			throw new ApiException(HttpStatus.FORBIDDEN, "This booking does not belong to you");
+			throw new ApiException(HttpStatus.FORBIDDEN, "You can only pay for your own bookings.");
 		}
 		if (!booking.isAwaitingPayment()) {
 			throw new ApiException(HttpStatus.CONFLICT,
-					"This booking is not awaiting payment (status: " + booking.status() + ")");
+					notPayableReason(booking.status()));
 		}
 
 		Payment payment;
@@ -108,7 +108,7 @@ public class PaymentService {
 			// Committed BEFORE the throw - see markFailed. The monolith relied on
 			// exactly this ordering, and the same message and status come back.
 			transactions.markFailed(payment.getId(), "Declined by gateway");
-			throw new ApiException(HttpStatus.PAYMENT_REQUIRED, "Payment was declined by the gateway");
+			throw new ApiException(HttpStatus.PAYMENT_REQUIRED, "Your payment was declined. Please check your card details or try another method.");
 		}
 
 		Payment charged;
@@ -119,7 +119,7 @@ public class PaymentService {
 			// Lost a race with a concurrent payment for the same booking. Both
 			// passed the PENDING_PAYMENT check; the unique index settled it.
 			transactions.markSagaFailure(payment.getId(), ConfirmState.NOT_APPLICABLE, ex.getMessage());
-			throw new ApiException(HttpStatus.CONFLICT, "This booking has already been paid");
+			throw new ApiException(HttpStatus.CONFLICT, "This booking has already been paid. You can find the receipt under My payments.");
 		}
 
 		return PaymentResponse.from(confirmOrCompensate(charged));
@@ -203,6 +203,16 @@ public class PaymentService {
 	 * always fails, anything else (including none, for a wallet) succeeds. This is
 	 * the single seam to swap for a real provider.
 	 */
+	private static String notPayableReason(String status) {
+		return switch (status == null ? "" : status) {
+			case "CONFIRMED" -> "This booking has already been paid.";
+			case "MODIFIED" -> "This booking was paid for before it was changed, so no further payment is needed.";
+			case "CANCELLED" -> "This booking was cancelled, so it can't be paid for.";
+			case "COMPLETED" -> "This rental is already completed.";
+			default -> "This booking can't be paid for right now (status: " + status + ").";
+		};
+	}
+
 	private boolean simulateGateway(String cardNumber) {
 		return cardNumber == null || !cardNumber.startsWith("0000");
 	}

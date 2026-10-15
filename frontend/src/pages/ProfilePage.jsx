@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useApi } from '../api/useApi';
-import { useAuth } from '../context/AuthContext';
-import { Message } from '../components/ui';
+import { useAuth } from '../context/useAuth';
+import { Message, Skeleton, FieldError } from '../components/ui';
+import { fieldClass } from '../components/format';
 
 export default function ProfilePage() {
   const api = useApi();
@@ -11,49 +12,65 @@ export default function ProfilePage() {
   const [phone, setPhone] = useState('');
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
+  const [fieldErrs, setFieldErrs] = useState({});
+  const [saving, setSaving] = useState(false);
 
-  async function load() {
-    setErr('');
-    try {
-      const data = await api.accounts.me();
-      setMe(data);
-      setFullName(data.fullName || '');
-      setPhone(data.phone || '');
-    } catch (e) {
-      setErr(e.message);
-    }
-  }
-
-  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  // Fetched inside the effect so a stale response can be ignored.
+  useEffect(() => {
+    let active = true;
+    api.accounts.me()
+      .then((data) => {
+        if (!active) return;
+        setErr('');
+        setMe(data);
+        setFullName(data.fullName || '');
+        setPhone(data.phone || '');
+      })
+      .catch((e) => {
+        if (active) setErr(e.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [api]);
 
   async function save(e) {
     e.preventDefault();
-    setMsg(''); setErr('');
+    setMsg(''); setErr(''); setFieldErrs({});
+    setSaving(true);
     try {
       const updated = await api.accounts.updateMe({ fullName, phone });
       updateName(updated.fullName);
+      setMe(updated);
       setMsg('Profile updated.');
     } catch (e2) {
-      setErr(e2.message);
+      setFieldErrs(e2.fieldErrors || {});
+      setErr(Object.keys(e2.fieldErrors || {}).length ? '' : e2.message);
+    } finally {
+      setSaving(false);
     }
   }
+
+  const dirty = !!me && (fullName !== (me.fullName || '') || phone !== (me.phone || ''));
 
   return (
     <div className="panel">
       <h2>My profile</h2>
       {err && <Message text={err} kind="err" />}
       {!me ? (
-        <div className="hint">Loading…</div>
+        <Skeleton rows={2} />
       ) : (
         <form onSubmit={save}>
           <div className="row">
-            <div className="field">
+            <div className={fieldClass(fieldErrs, 'fullName')}>
               <label>Full name</label>
-              <input value={fullName} onChange={(e) => setFullName(e.target.value)} required />
+              <input value={fullName} onChange={(e) => setFullName(e.target.value)} autoComplete="name" maxLength={150} required />
+              <FieldError errors={fieldErrs} name="fullName" />
             </div>
-            <div className="field">
+            <div className={fieldClass(fieldErrs, 'phone')}>
               <label>Phone</label>
-              <input value={phone} onChange={(e) => setPhone(e.target.value)} />
+              <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} autoComplete="tel" inputMode="tel" placeholder="+65 9123 4567" maxLength={20} />
+              <FieldError errors={fieldErrs} name="phone" />
             </div>
           </div>
           <div className="row">
@@ -62,7 +79,7 @@ export default function ProfilePage() {
             <div className="field"><label>Account status</label><input value={me.enabled ? 'Enabled' : 'Disabled'} disabled /></div>
           </div>
           <Message text={msg} kind="ok" />
-          <button type="submit" className="primary">Save changes</button>
+          <button type="submit" className="primary" disabled={saving || !dirty}>{saving ? 'Saving…' : 'Save changes'}</button>
         </form>
       )}
     </div>

@@ -45,7 +45,7 @@ public class ReservationClient {
 					.header(HttpHeaders.AUTHORIZATION, "Bearer " + tokens.token())
 					.retrieve()
 					.onStatus(status -> status.value() == 404, (req, res) -> {
-						throw new ApiException(HttpStatus.NOT_FOUND, "No booking with id " + bookingId);
+						throw new ApiException(HttpStatus.NOT_FOUND, "Booking #" + bookingId + " was not found.");
 					})
 					.body(BookingView.class);
 
@@ -58,7 +58,7 @@ public class ReservationClient {
 			throw ex;
 		}
 		catch (RestClientException ex) {
-			throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "Reservation service is unavailable");
+			throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "The booking system is temporarily unavailable. Please try again in a moment.");
 		}
 	}
 
@@ -86,7 +86,7 @@ public class ReservationClient {
 			throw ex;
 		}
 		catch (RestClientException ex) {
-			throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "Reservation service is unavailable");
+			throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "The booking system is temporarily unavailable. Please try again in a moment.");
 		}
 	}
 
@@ -100,7 +100,7 @@ public class ReservationClient {
 					.toBodilessEntity();
 		}
 		catch (RestClientException ex) {
-			throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "Reservation service is unavailable");
+			throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "The booking system is temporarily unavailable. Please try again in a moment.");
 		}
 	}
 

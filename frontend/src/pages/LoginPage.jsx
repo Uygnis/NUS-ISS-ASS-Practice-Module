@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { useAuth } from "../context/AuthContext";
+import { useAuth } from "../context/useAuth";
 import { useApi } from "../api/useApi";
+import { PasswordInput } from "../components/ui";
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -9,7 +10,17 @@ export default function LoginPage() {
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [err, setErr] = useState("");
+  const [err, setErr] = useState(() => {
+    try {
+      if (sessionStorage.getItem("rentez_session_expired")) {
+        sessionStorage.removeItem("rentez_session_expired");
+        return "Your session has expired. Please sign in again.";
+      }
+    } catch {
+      /* storage blocked */
+    }
+    return "";
+  });
   const [busy, setBusy] = useState(false);
 
   async function handleSubmit(e) {
@@ -45,15 +56,17 @@ export default function LoginPage() {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              autoComplete="email"
+              autoFocus
               required
             />
           </div>
           <div className="field">
             <label>Password</label>
-            <input
-              type="password"
+            <PasswordInput
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
               required
             />
           </div>

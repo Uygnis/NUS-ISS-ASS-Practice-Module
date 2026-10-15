@@ -1,14 +1,14 @@
 import { useEffect, useState, Fragment } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useApi } from "../api/useApi";
-import {
-  Message,
-  Empty,
-  StatusPill,
-  fmtMoney,
-  fmtDate,
-  BOOKING_STATUS_CLASS,
-} from "../components/ui";
+import { Message, Empty, Skeleton, StatusPill } from "../components/ui";
+import { fmtMoney, fmtDate, BOOKING_STATUS_CLASS, todayISO, dateRangeError } from "../components/format";
+
+function lockedReason(b) {
+  if (b.status === "CONFIRMED") return "Paid bookings can't be changed or cancelled here";
+  if (b.status === "CANCELLED") return "This booking was cancelled";
+  return "";
+}
 
 export default function BookingsPage() {
   const api = useApi();
@@ -18,29 +18,37 @@ export default function BookingsPage() {
   const [err, setErr] = useState("");
   const [editingId, setEditingId] = useState(null);
   const [editDraft, setEditDraft] = useState(null);
-  const [notice, setNotice] = useState("");
+  const justCreated = routerLocation.state?.justCreated;
+  // Seeded from the navigation state rather than set in an effect.
+  const [notice, setNotice] = useState(
+    justCreated ? `Booking #${justCreated} created. Pay to confirm it.` : "",
+  );
+  const [editErr, setEditErr] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  // load() asks for a refetch; the effect does it. Fetching inside the
+  // effect (not via a local async function) lets a stale response be ignored.
+  const [reloadKey, setReloadKey] = useState(0);
+  const load = () => setReloadKey((k) => k + 1);
 
   useEffect(() => {
-    if (routerLocation.state?.justCreated) {
-      setNotice(`Booking #${routerLocation.state.justCreated} created.`);
-    }
-  }, [routerLocation.state]);
-
-  async function load() {
-    setErr("");
-    try {
-      const list = await api.reservations.mine();
-      setBookings(list);
-    } catch (e) {
-      setErr(e.message);
-    }
-  }
-
-  useEffect(() => {
-    load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */
-  }, []);
+    let active = true;
+    api.reservations.mine()
+      .then((data) => {
+        if (!active) return;
+        setErr("");
+        setBookings(data);
+      })
+      .catch((e) => {
+        if (active) setErr(e.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [api, reloadKey]);
 
   function startEdit(b) {
+    setEditErr("");
     setEditingId(b.id);
     setEditDraft({
       startDate: b.startDate,
@@ -49,13 +57,27 @@ export default function BookingsPage() {
     });
   }
 
-  async function saveEdit(id) {
+  async function saveEdit(id, originalStart) {
+    // A booking already under way keeps its past start date; only a moved
+    // start has to be today or later (same rule as the backend).
+    const rangeErr = dateRangeError(editDraft.startDate, editDraft.endDate, {
+      allowPastStart: editDraft.startDate === originalStart,
+    });
+    if (rangeErr) {
+      setEditErr(rangeErr);
+      return;
+    }
+    setEditErr("");
+    setSavingEdit(true);
     try {
       await api.reservations.update(id, editDraft);
       setEditingId(null);
+      setNotice(`Booking #${id} updated.`);
       load();
     } catch (e) {
-      setErr(e.message);
+      setEditErr(e.message);
+    } finally {
+      setSavingEdit(false);
     }
   }
 
@@ -76,16 +98,24 @@ export default function BookingsPage() {
   return (
     <div className="panel">
       <h2>My bookings</h2>
-      <Message text={notice} kind="ok" />
+      {justCreated && notice.startsWith(`Booking #${justCreated} created`) ? (
+        <Message text={notice} kind="ok" sticky>
+          <button className="small accent" onClick={() => goPay(justCreated)}>
+            Pay now
+          </button>
+        </Message>
+      ) : (
+        <Message text={notice} kind="ok" />
+      )}
       <Message text={err} kind="err" />
       {bookings === null ? (
-        <div className="hint">Loading…</div>
+        <Skeleton rows={4} />
       ) : bookings.length === 0 ? (
-        <Empty>
-          No bookings yet. Head to Browse &amp; book to reserve a car.
+        <Empty action={{ label: "Browse cars", to: "/browse" }}>
+          You have no bookings yet.
         </Empty>
       ) : (
-        <table>
+        <table className="stack">
           <thead>
             <tr>
               <th>ID</th>
@@ -101,24 +131,25 @@ export default function BookingsPage() {
             {bookings.map((b) => (
               <Fragment key={b.id}>
                 <tr>
-                  <td className="mono">#{b.id}</td>
-                  <td>
+                  <td data-label="ID" className="mono">#{b.id}</td>
+                  <td data-label="Car">
                     {b.carMake} {b.carModel}
                     <div className="hint">{b.carType}</div>
                   </td>
-                  <td>
+                  <td data-label="Dates">
                     {fmtDate(b.startDate)} → {fmtDate(b.endDate)}
                   </td>
-                  <td>{b.pickupLocation || "—"}</td>
-                  <td>{fmtMoney(b.totalAmount)}</td>
-                  <td>
+                  <td data-label="Pickup">{b.pickupLocation || "—"}</td>
+                  <td data-label="Total">{fmtMoney(b.totalAmount)}</td>
+                  <td data-label="Status">
                     <StatusPill status={b.status} map={BOOKING_STATUS_CLASS} />
                   </td>
-                  <td>
+                  <td data-label="Actions">
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                       <button
                         className="small"
                         onClick={() => startEdit(b)}
+                        title={lockedReason(b) || "Change the dates or pickup location"}
                         disabled={
                           b.status === "CONFIRMED" || b.status === "CANCELLED"
                         }
@@ -128,6 +159,7 @@ export default function BookingsPage() {
                       <button
                         className="small danger"
                         onClick={() => cancelBooking(b.id)}
+                        title={lockedReason(b) || "Cancel this booking"}
                         disabled={
                           b.status === "CONFIRMED" || b.status === "CANCELLED"
                         }
@@ -137,9 +169,12 @@ export default function BookingsPage() {
                       <button
                         className="small accent"
                         onClick={() => goPay(b.id)}
-                        disabled={
-                          b.status === "CONFIRMED" || b.status === "CANCELLED"
+                        title={
+                          b.status === "PENDING_PAYMENT"
+                            ? "Pay for this booking"
+                            : "Only bookings awaiting payment can be paid"
                         }
+                        disabled={b.status !== "PENDING_PAYMENT"}
                       >
                         Pay
                       </button>
@@ -149,12 +184,20 @@ export default function BookingsPage() {
                 {editingId === b.id && (
                   <tr>
                     <td colSpan={7}>
-                      <div className="inline-form" style={{ margin: "6px 0" }}>
+                      <form
+                        className="inline-form"
+                        style={{ margin: "6px 0" }}
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          saveEdit(b.id, b.startDate);
+                        }}
+                      >
                         <div className="field">
                           <label>Start date</label>
                           <input
                             type="date"
                             value={editDraft.startDate}
+                            min={b.startDate < todayISO() ? b.startDate : todayISO()}
                             onChange={(e) =>
                               setEditDraft((d) => ({
                                 ...d,
@@ -168,6 +211,7 @@ export default function BookingsPage() {
                           <input
                             type="date"
                             value={editDraft.endDate}
+                            min={editDraft.startDate}
                             onChange={(e) =>
                               setEditDraft((d) => ({
                                 ...d,
@@ -190,21 +234,24 @@ export default function BookingsPage() {
                         </div>
                         <div className="field">
                           <button
+                            type="submit"
                             className="primary small"
-                            onClick={() => saveEdit(b.id)}
+                            disabled={savingEdit}
                           >
-                            Save
+                            {savingEdit ? "Saving…" : "Save"}
                           </button>
                         </div>
                         <div className="field">
                           <button
+                            type="button"
                             className="small"
                             onClick={() => setEditingId(null)}
                           >
                             Cancel
                           </button>
                         </div>
-                      </div>
+                      </form>
+                      <Message text={editErr} kind="err" />
                     </td>
                   </tr>
                 )}

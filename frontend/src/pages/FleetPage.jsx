@@ -1,15 +1,8 @@
 import { useEffect, useState } from "react";
 import { useApi } from "../api/useApi";
 import { CAR_TYPES } from "../api/catalog";
-import {
-  Message,
-  Empty,
-  StatusPill,
-  fmtMoney,
-  fmtDate,
-  CAR_STATUS_CLASS,
-  MAINT_STATUS_CLASS,
-} from "../components/ui";
+import { Message, Empty, Skeleton, StatusPill, FieldError } from "../components/ui";
+import { fmtMoney, fmtDate, CAR_STATUS_CLASS, MAINT_STATUS_CLASS, todayISO, fieldClass } from "../components/format";
 
 const SUBS = [
   { id: "cars", label: "Cars" },
@@ -36,7 +29,6 @@ export default function FleetPage() {
       {sub === "cars" && <CarsPanel />}
       {sub === "add" && <AddCarPanel />}
       {sub === "maint" && <MaintenancePanel />}
-      {sub === "stats" && <StatsPanel />}
     </>
   );
 }
@@ -48,19 +40,26 @@ function CarsPanel() {
   const [cars, setCars] = useState(null);
   const [err, setErr] = useState("");
 
-  async function load() {
-    setErr("");
-    try {
-      const list = await api.catalog.searchAll(location, type);
-      console.log(list);
-      setCars(list);
-    } catch (e) {
-      setErr(e.message);
-    }
-  }
+  // Filters apply when Filter is pressed, not on every keystroke.
+  const [applied, setApplied] = useState({ location: "", type: "", n: 0 });
+  const load = () => setApplied((a) => ({ location, type, n: a.n + 1 }));
+
   useEffect(() => {
-    load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */
-  }, []);
+    let active = true;
+    api.catalog
+      .searchAll(applied.location, applied.type)
+      .then((data) => {
+        if (!active) return;
+        setErr("");
+        setCars(data);
+      })
+      .catch((e) => {
+        if (active) setErr(e.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [api, applied]);
 
   async function setStatus(id, status) {
     if (!status) return;
@@ -111,9 +110,9 @@ function CarsPanel() {
       </div>
       <Message text={err} kind="err" />
       {cars === null ? (
-        <div className="hint">Loading…</div>
+        <Skeleton rows={4} />
       ) : cars.length === 0 ? (
-        <Empty>No cars found.</Empty>
+        <Empty>No cars match these filters.</Empty>
       ) : (
         <table>
           <thead>
@@ -183,6 +182,8 @@ function AddCarPanel() {
     location: "",
   });
   const [msg, setMsg] = useState(null);
+  const [fieldErrs, setFieldErrs] = useState({});
+  const [saving, setSaving] = useState(false);
 
   function set(field) {
     return (e) => setForm((f) => ({ ...f, [field]: e.target.value }));
@@ -191,6 +192,8 @@ function AddCarPanel() {
   async function submit(e) {
     e.preventDefault();
     setMsg(null);
+    setFieldErrs({});
+    setSaving(true);
     try {
       const c = await api.catalog.create({
         make: form.make,
@@ -201,7 +204,7 @@ function AddCarPanel() {
         location: form.location,
       });
       setMsg({
-        text: `Added ${c.make} ${c.model} as car #${c.id}.`,
+        text: `Added ${c.make} ${c.model} (${c.location}) to the fleet.`,
         kind: "ok",
       });
       setForm({
@@ -213,7 +216,10 @@ function AddCarPanel() {
         location: "",
       });
     } catch (e2) {
-      setMsg({ text: e2.message, kind: "err" });
+      setFieldErrs(e2.fieldErrors || {});
+      if (!Object.keys(e2.fieldErrors || {}).length) setMsg({ text: e2.message, kind: "err" });
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -222,17 +228,21 @@ function AddCarPanel() {
       <h2>Add a car to the fleet</h2>
       <form onSubmit={submit}>
         <div className="row">
-          <div className="field">
+          <div className={fieldClass(fieldErrs, "make")}>
             <label>Make</label>
             <input value={form.make} onChange={set("make")} required />
+            <FieldError errors={fieldErrs} name="make" />
           </div>
-          <div className="field">
+          <div className={fieldClass(fieldErrs, "model")}>
             <label>Model</label>
             <input value={form.model} onChange={set("model")} required />
+            <FieldError errors={fieldErrs} name="model" />
           </div>
-          <div className="field">
+          <div className={fieldClass(fieldErrs, "year")}>
             <label>Year</label>
-            <input type="number" value={form.year} onChange={set("year")} />
+            <input type="number" value={form.year} onChange={set("year")}
+              min={1990} max={new Date().getFullYear() + 1} placeholder={String(new Date().getFullYear())} />
+            <FieldError errors={fieldErrs} name="year" />
           </div>
         </div>
         <div className="row">
@@ -246,24 +256,28 @@ function AddCarPanel() {
               ))}
             </select>
           </div>
-          <div className="field">
+          <div className={fieldClass(fieldErrs, "dailyRate")}>
             <label>Daily rate</label>
             <input
               type="number"
               step="0.01"
+              min="0.01"
+              placeholder="e.g. 80.00"
               value={form.dailyRate}
               onChange={set("dailyRate")}
               required
             />
+            <FieldError errors={fieldErrs} name="dailyRate" />
           </div>
-          <div className="field">
+          <div className={fieldClass(fieldErrs, "location")}>
             <label>Location</label>
             <input value={form.location} onChange={set("location")} required />
+            <FieldError errors={fieldErrs} name="location" />
           </div>
         </div>
         {msg && <Message text={msg.text} kind={msg.kind} />}
-        <button type="submit" className="primary">
-          Add car
+        <button type="submit" className="primary" disabled={saving}>
+          {saving ? "Adding…" : "Add car"}
         </button>
       </form>
     </div>
@@ -281,6 +295,23 @@ function MaintenancePanel() {
   const [histCarId, setHistCarId] = useState("");
   const [history, setHistory] = useState(null);
   const [histErr, setHistErr] = useState("");
+  const [cars, setCars] = useState([]);
+  const [scheduling, setScheduling] = useState(false);
+
+  // Staff pick a car by name rather than typing its ID.
+  useEffect(() => {
+    api.catalog
+      .searchAll("", "")
+      .then(setCars)
+      .catch((e) => setMsg({ text: e.message, kind: "err" }));
+   
+   // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function carLabel(id) {
+    const c = cars.find((x) => String(x.id) === String(id));
+    return c ? `${c.make} ${c.model} (${c.location})` : `car #${id}`;
+  }
 
   function set(field) {
     return (e) => setForm((f) => ({ ...f, [field]: e.target.value }));
@@ -289,6 +320,7 @@ function MaintenancePanel() {
   async function submit(e) {
     e.preventDefault();
     setMsg(null);
+    setScheduling(true);
     try {
       const m = await api.catalog.scheduleMaintenance({
         carId: Number(form.carId),
@@ -296,23 +328,25 @@ function MaintenancePanel() {
         description: form.description,
       });
       setMsg({
-        text: `Maintenance #${m.id} scheduled for car #${m.carId}.`,
+        text: `Maintenance scheduled for ${carLabel(m.carId)} on ${fmtDate(m.scheduledDate)}.`,
         kind: "ok",
       });
       setForm({ carId: "", scheduledDate: "", description: "" });
     } catch (e2) {
       setMsg({ text: e2.message, kind: "err" });
+    } finally {
+      setScheduling(false);
     }
   }
 
-  async function loadHistory() {
-    if (!histCarId) {
+  async function loadHistory(carId = histCarId) {
+    if (!carId) {
       setHistory(null);
       return;
     }
     setHistErr("");
     try {
-      const list = await api.catalog.maintenanceFor(histCarId);
+      const list = await api.catalog.maintenanceFor(carId);
       setHistory(list);
     } catch (e) {
       setHistErr(e.message);
@@ -335,19 +369,22 @@ function MaintenancePanel() {
         <h2>Schedule maintenance</h2>
         <form className="inline-form" onSubmit={submit}>
           <div className="field">
-            <label>Car ID</label>
-            <input
-              type="number"
-              value={form.carId}
-              onChange={set("carId")}
-              required
-            />
+            <label>Car</label>
+            <select value={form.carId} onChange={set("carId")} required>
+              <option value="">Select a car…</option>
+              {cars.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.make} {c.model} {c.year ? `(${c.year})` : ""} · {c.location} · {c.status}
+                </option>
+              ))}
+            </select>
           </div>
           <div className="field">
             <label>Scheduled date</label>
             <input
               type="date"
               value={form.scheduledDate}
+              min={todayISO()}
               onChange={set("scheduledDate")}
               required
             />
@@ -357,12 +394,14 @@ function MaintenancePanel() {
             <input
               value={form.description}
               onChange={set("description")}
+              placeholder="e.g. Oil change and tyre rotation"
+              maxLength={500}
               required
             />
           </div>
           <div className="field">
-            <button type="submit" className="primary">
-              Schedule
+            <button type="submit" className="primary" disabled={scheduling}>
+              {scheduling ? "Scheduling…" : "Schedule"}
             </button>
           </div>
         </form>
@@ -372,17 +411,21 @@ function MaintenancePanel() {
         <h2>Maintenance history for a car</h2>
         <div className="inline-form">
           <div className="field">
-            <label>Car ID</label>
-            <input
-              type="number"
+            <label>Car</label>
+            <select
               value={histCarId}
-              onChange={(e) => setHistCarId(e.target.value)}
-            />
-          </div>
-          <div className="field">
-            <button type="button" className="primary" onClick={loadHistory}>
-              Look up
-            </button>
+              onChange={(e) => {
+                setHistCarId(e.target.value);
+                loadHistory(e.target.value);
+              }}
+            >
+              <option value="">Select a car…</option>
+              {cars.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.make} {c.model} {c.year ? `(${c.year})` : ""} · {c.location} · {c.status}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
         <Message text={histErr} kind="err" />
